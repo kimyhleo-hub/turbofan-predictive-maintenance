@@ -1,0 +1,2 @@
+# LightGBM text-format model dumps are line-ending-sensitive; never normalize them.
+models/*.txt -text -diff

@@ -1,0 +1,35 @@
+{
+ "N": 10,
+ "EDF": 78,
+ "robust": {
+  "mean": 48.0,
+  "std": 0.0,
+  "best": 48,
+  "worst": 48,
+  "success_rate_5pct": 1.0,
+  "best_worst_ratio": 1.0,
+  "feasible_rate": 1.0
+ },
+ "efficiency": {
+  "mean": 100.0,
+  "std": 0.0,
+  "best": 100,
+  "worst": 100,
+  "success_rate_5pct": 1.0,
+  "best_worst_ratio": 1.0,
+  "feasible_rate": 1.0
+ },
+ "gatekeepers": {
+  "shapiro_robust_p": NaN,
+  "shapiro_eff_p": NaN,
+  "levene_p": NaN
+ },
+ "test": {
+  "name": "Mann-Whitney U (단측: 강건<효율)",
+  "p": 7.968955844033122e-06
+ },
+ "vs_EDF": {
+  "wilcoxon_p": 0.0009765625,
+  "win_rate": 1.0
+ }
+}

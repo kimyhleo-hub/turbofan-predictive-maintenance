@@ -1,0 +1,95 @@
+# 데이터 (원본은 커밋 안 함 — 각자 C-MAPSS 다운로드)
+data/raw/
+data/processed/*
+!data/processed/fleet_rul_predictions_unified.csv
+!data/processed/feature_manifest.json
+
+# Local experiment outputs
+reports/figures/*
+!reports/figures/.gitkeep
+!reports/figures/eda_final/
+!reports/figures/eda_final/*.png
+!reports/figures/fd004_deep_dive/
+!reports/figures/fd004_deep_dive/*.png
+!reports/figures/eda_nb/
+!reports/figures/eda_nb/*.png
+!reports/figures/preprocessing/
+!reports/figures/preprocessing/*.png
+!reports/figures/rul_model/
+!reports/figures/rul_model/*.png
+!reports/figures/scheduling/
+!reports/figures/scheduling/*.png
+!reports/figures/eda_team/
+!reports/figures/eda_team/fd003/
+!reports/figures/eda_team/fd003/*.png
+!reports/figures/eda_supplement/
+!reports/figures/eda_supplement/*.png
+reports/tables/
+reports/results/
+models/*
+!models/*.txt
+outputs/
+runs/
+_build/
+local_experiments/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# 개인 파일 (팀 레포에 커밋 금지)
+_leo_*
+*_이해노트.md
+*_슬라이드.md
+
+# Jarvis 내부
+_team/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Office 임시 파일
+~$*
+
+!data/processed/feature_manifest.json
+!data/processed/fleet_rul_predictions_unified.csv
+!artifacts/
+!artifacts/03_model/
+!artifacts/03_model/summary.json
+!artifacts/03_model/
+!artifacts/03_model/loop2_summary.json
+!artifacts/03_model/s2_lstmD.npz
+!artifacts/04_scheduling/
+!artifacts/04_scheduling/pred_base.npy
+!artifacts/04_scheduling/pred_p10.npy
+!artifacts/04_scheduling/rolling_summary.json
+!artifacts/04_scheduling/rolling_seeds.json
+
+artifacts/04_scheduling/*.pkl
+
+# ── 산출물(artifacts) ────────────────────────────────────────
+# 노트북 03·04·05가 로드하는 체크포인트는 커밋한다 (총 ~530KB).
+# 없으면 노트북이 실행되지 않으므로 레포에 포함한다.
+artifacts/**/*.pkl          # 재학습 모델(재생성 가능, 6.8MB)
+artifacts/**/*.flag
+
+# 대용량 중간 산출물은 제외 (02 실행으로 재생성)
+data/processed/*
+!data/processed/feature_manifest.json
+!data/processed/fleet_rul_predictions_unified.csv
+
+# 배포 압축본 (scripts/make_share_package.py 로 생성)
+dist/
+
+# 팀원 제출물 (각자 로컬)
+results/
+
+# 발표용 PPT는 로컬에만 유지, GitHub에는 코드·보고서만
+reports/*.pptx

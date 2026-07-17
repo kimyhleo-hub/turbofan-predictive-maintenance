@@ -1,0 +1,153 @@
+{
+ "BEST": {
+  "num_leaves": 63,
+  "learning_rate": 0.05,
+  "min_child_samples": 60,
+  "colsample_bytree": 0.7,
+  "subsample": 0.7,
+  "reg_lambda": 1.0
+ },
+ "tune_top5": [
+  {
+   "num_leaves": 63,
+   "learning_rate": 0.05,
+   "min_child_samples": 60,
+   "colsample_bytree": 0.7,
+   "subsample": 0.7,
+   "reg_lambda": 1.0,
+   "valid_RMSE": 15.174
+  },
+  {
+   "num_leaves": 63,
+   "learning_rate": 0.03,
+   "min_child_samples": 60,
+   "colsample_bytree": 0.7,
+   "subsample": 0.7,
+   "reg_lambda": 0.0,
+   "valid_RMSE": 15.175
+  },
+  {
+   "num_leaves": 31,
+   "learning_rate": 0.05,
+   "min_child_samples": 60,
+   "colsample_bytree": 0.7,
+   "subsample": 0.9,
+   "reg_lambda": 0.0,
+   "valid_RMSE": 15.185
+  },
+  {
+   "num_leaves": 63,
+   "learning_rate": 0.03,
+   "min_child_samples": 10,
+   "colsample_bytree": 0.9,
+   "subsample": 0.9,
+   "reg_lambda": 0.0,
+   "valid_RMSE": 15.196
+  },
+  {
+   "num_leaves": 63,
+   "learning_rate": 0.03,
+   "min_child_samples": 30,
+   "colsample_bytree": 0.7,
+   "subsample": 0.9,
+   "reg_lambda": 10.0,
+   "valid_RMSE": 15.199
+  }
+ ],
+ "lgbm_valid_single": 15.173735853072575,
+ "lgbm_valid_ens": 15.115,
+ "lgbm_perfd_ens": {
+  "FD001": 14.43,
+  "FD002": 16.84,
+  "FD003": 11.0,
+  "FD004": 15.23
+ },
+ "lstm_valid": {
+  "A": 15.95516177759588,
+  "B": 14.41662975007838,
+  "C": 13.710579210725232
+ },
+ "lstm_perfd": {
+  "A": {
+   "FD001": 13.9,
+   "FD002": 17.57,
+   "FD003": 12.68,
+   "FD004": 16.33
+  },
+  "B": {
+   "FD001": 13.11,
+   "FD002": 16.21,
+   "FD003": 12.12,
+   "FD004": 14.07
+  },
+  "C": {
+   "FD001": 12.09,
+   "FD002": 15.39,
+   "FD003": 11.03,
+   "FD004": 13.68
+  }
+ },
+ "lstm_best_ep": {
+  "A": 30,
+  "B": 26,
+  "C": 8
+ },
+ "alpha": 0.25,
+ "mix_valid": 13.553,
+ "test_table": [
+  {
+   "모델": "LGBM 기본(03)",
+   "RMSE_cap": 15.02,
+   "PHM08_cap": 3102,
+   "FD001": 13.74,
+   "FD002": 14.55,
+   "FD003": 14.21,
+   "FD004": 16.26
+  },
+  {
+   "모델": "LGBM 튜닝+5seed",
+   "RMSE_cap": 14.89,
+   "PHM08_cap": 3131.0,
+   "FD001": 13.85,
+   "FD002": 14.5,
+   "FD003": 13.93,
+   "FD004": 16.02
+  },
+  {
+   "모델": "LSTM-A raw(전처리X)",
+   "RMSE_cap": 16.3,
+   "PHM08_cap": 4475.0,
+   "FD001": 14.4,
+   "FD002": 15.69,
+   "FD003": 16.06,
+   "FD004": 17.68
+  },
+  {
+   "모델": "LSTM-B raw+cond",
+   "RMSE_cap": 15.08,
+   "PHM08_cap": 3653.0,
+   "FD001": 14.44,
+   "FD002": 14.72,
+   "FD003": 15.64,
+   "FD004": 15.46
+  },
+  {
+   "모델": "LSTM-C 우리 전처리",
+   "RMSE_cap": 14.31,
+   "PHM08_cap": 3602.0,
+   "FD001": 13.52,
+   "FD002": 13.85,
+   "FD003": 14.87,
+   "FD004": 14.85
+  },
+  {
+   "모델": "혼합 a=0.25",
+   "RMSE_cap": 13.96,
+   "PHM08_cap": 3081.0,
+   "FD001": 13.13,
+   "FD002": 13.51,
+   "FD003": 14.13,
+   "FD004": 14.65
+  }
+ ]
+}

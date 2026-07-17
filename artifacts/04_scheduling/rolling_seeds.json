@@ -1,0 +1,23 @@
+[
+ {
+  "seed": 42,
+  "static-point": 22,
+  "static-p10": 19,
+  "rolling-point": 3,
+  "rolling-p10": 3
+ },
+ {
+  "seed": 7,
+  "static-point": 20,
+  "static-p10": 31,
+  "rolling-point": 5,
+  "rolling-p10": 1
+ },
+ {
+  "seed": 123,
+  "static-point": 17,
+  "static-p10": 22,
+  "rolling-point": 3,
+  "rolling-p10": 1
+ }
+]

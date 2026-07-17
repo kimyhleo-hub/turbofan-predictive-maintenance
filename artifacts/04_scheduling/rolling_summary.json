@@ -1,0 +1,42 @@
+{
+ "n": 178,
+ "K": 19,
+ "res": {
+  "static-point": {
+   "fail": 22,
+   "maint": 156,
+   "carried": 0,
+   "waste": 4068
+  },
+  "static-p10": {
+   "fail": 19,
+   "maint": 158,
+   "carried": 1,
+   "waste": 4128
+  },
+  "static-oracle": {
+   "fail": 0,
+   "maint": 178,
+   "carried": 0,
+   "waste": 3841
+  },
+  "rolling-point": {
+   "fail": 3,
+   "maint": 175,
+   "carried": 0,
+   "waste": 3961
+  },
+  "rolling-p10": {
+   "fail": 2,
+   "maint": 176,
+   "carried": 0,
+   "waste": 3935
+  },
+  "rolling-oracle": {
+   "fail": 0,
+   "maint": 178,
+   "carried": 0,
+   "waste": 3841
+  }
+ }
+}

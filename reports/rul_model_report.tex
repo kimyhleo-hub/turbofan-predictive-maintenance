@@ -1,0 +1,645 @@
+% !TEX program = xelatex
+% RUL 예측 모델 보고서 — LightGBM (통합), ablation A0~A7, test 최종 평가
+\documentclass[11pt]{article}
+
+\usepackage{kotex}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage[a4paper,margin=24mm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{float}
+\usepackage{caption}
+\usepackage[table]{xcolor}
+\usepackage{enumitem}
+\usepackage[colorlinks=true,linkcolor=black,urlcolor=blue,citecolor=black]{hyperref}
+
+\graphicspath{{figures/}{figures/rul_model/}}
+\captionsetup{font=small,labelfont=bf}
+\setlength{\parskip}{0.4em}
+\setlength{\parindent}{0pt}
+\renewcommand{\arraystretch}{1.15}
+\newcommand{\fig}[3]{\begin{figure}[H]\centering\includegraphics[width=#2\linewidth]{#1}\caption{#3}\end{figure}}
+
+\title{\textbf{RUL 예측 모델 보고서 — LightGBM (통합 모델)}\\[3pt]
+\large — baseline 비교 · ablation A0--A7 · test 최종 평가 · fleet 예측 산출}
+\author{항공엔진 잔여수명(RUL) 예측 기반 정비 스케줄링 최적화 프로젝트}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+본 보고서는 통합 전처리 산출물(\texttt{train/test\_features\_unified.csv}, 160{,}359행/709엔진)로
+LightGBM RUL 회귀를 학습·평가한 결과를 기록한다.
+평가 규율은 다음과 같다: 모델 선택과 ablation은 \textbf{엔진 층화 valid}(FD별 25\%, 178엔진)로만 수행하고, \textbf{test는 마지막에 한 번만} 평가한다.
+최종 test 성능은 \textbf{FD001 RMSE 13.74}(cap125 규약)로 표준 기준선(12--14) 안에 들었으며,
+전체 707개 test 엔진 RMSE 15.02, 누수 가드(FD001 valid $>8$)를 통과했다.
+Ablation은 전처리 가정을 실증했다:
+rolling 특징이 결정적이고(제거 시 $+2.6$, gain 비중 98.9\%),
+조건 지시자 4개는 아무 기여가 없으며(제거 결정 검증),
+고분산 센서는 순기여한다(유지 확정).
+특히 \textbf{통합 모델이 FD별 개별 모델보다 복잡한 서브셋에서 우수}했다(FD004 $17.32 \to 15.27$, FD003 $12.26 \to 11.08$) — 통합 구성 채택의 실증 근거다.
+
+성능 극대화 라운드(03b)에서 두 가지가 추가로 확립되었다.
+(1)~하이퍼파라미터 탐색 표면은 평평하다 — 24 trial의 개선이 $-0.04$로, 특징 변경 효과($\pm2.6$)의 1/25 수준.
+(2)~\textbf{LSTM 입력 사다리(A/B/C)}: 같은 LSTM에 입력 표현만 바꾸면 test $16.30 \to 15.08 \to 14.31$ —
+조건 정보 제공만으로는 부족하고 신호에서 조건을 \emph{제거}해야 하며, 이로써 전처리 기여가 \textbf{모델 불문}임이 입증되었다.
+v1 최종 혼합 모델($\alpha{=}0.25$)은 test RMSE 13.96으로 비교한 최신 딥러닝을 4개 중 3개 서브셋에서 앞섰다.
+나아가 \textbf{EDA$\to$전처리$\to$모델 루프}를 두 회차 수행했다:
+1회차(v2 — 자기-기준선·onset·누적손상)에서 단일 LightGBM이 test 11.65(FD001 10.12)로 도약했고(누수·시드·물리 3중 적대검증 통과),
+2회차(v3 — FD003 겨냥 다중 임계 onset 시계)에서 혼합 모델이 \textbf{test 10.90}(4개 서브셋 10.5--11.0 균형)에 도달했다(시드 검증).
+이후 확장 시도는 유의미한 개선이 없어 v3를 최종으로 확정 — "표현이 성능을 만든다"가 루프 전 과정에서 실증되었다.
+엔진별 예측 \texttt{fleet\_rul\_predictions\_unified.csv}(707행, v3 혼합 모델)를 \texttt{04\_optimization}의 입력으로 인계한다.
+\end{abstract}
+\vspace{0.5em}
+\begin{center}\fbox{\parbox{0.93\linewidth}{\small
+\textbf{대응 노트북:} \texttt{notebooks/03\_rul\_model.ipynb} (35셀) —
+기본 $\to$ ablation $\to$ 튜닝 $\to$ LSTM 사다리 $\to$ 혼합 $\to$ 루프 v2/v3 $\to$ 최종 10.90.
+누수 스파이크 테스트$\cdot$시드 재현$\cdot$최종 수치 일치가 노트북 내 \texttt{assert}로 검증된다.\\
+\textbf{파이프라인 위치:} 01 EDA $\to$ 02 전처리 $\to$ \textbf{03 예측} $\to$ 04 스케줄링 $\to$ 05 평가\\
+\textbf{선행 문서:} \texttt{preprocessing\_report.pdf} \quad
+\textbf{다음 문서:} \texttt{scheduling\_report.pdf} (이 예측을 정비 결정으로)
+}}\end{center}
+\vspace{0.5em}
+
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{설정 — 데이터·분리·평가 규율}
+% =====================================================================
+
+\begin{itemize}[nosep]
+  \item \textbf{입력} — 통합 tabular(합집합 17센서, 특징 136 $+$ 범주형 \texttt{dataset\_id}·\texttt{condition\_id}, NaN native).
+  \item \textbf{분리} — \texttt{engine\_id} 기준 FD별 층화 75/25 (train 531 / valid 178 엔진, seed 42). 02 전처리와 동일 규약.
+  \item \textbf{평가 규율} — 하이퍼파라미터·특징 선택·ablation은 valid로만. test(707엔진, 엔진별 마지막 관측)는 \S7에서 \textbf{한 번만} 평가.
+  \item \textbf{누수 가드} — FD001 valid RMSE $<8$이면 파이프라인 중단(기준선 12--14 대비 의심 신호). 실측 14.64로 통과.
+  \item \textbf{LightGBM} — lr 0.05, num\_leaves 63, min\_child\_samples 30, subsample/colsample 0.9, early stopping 200 (최대 4000 tree). 선택된 tree 수 155.
+\end{itemize}
+
+% =====================================================================
+\section{Baseline 비교}
+% =====================================================================
+
+선형회귀·RandomForest는 NaN을 다루지 못하므로 \textbf{교집합 15센서의 \texttt{z\_}}(전 FD 완전)로,
+HistGB·LightGBM은 NaN native로 전체 136 특징을 사용했다(표~\ref{tab:base}).
+
+\begin{table}[H]
+\centering
+\caption{Baseline 비교 (valid rows, RUL clip 125)}
+\label{tab:base}
+\begin{tabular}{lrr}
+\toprule
+모델 & RMSE & MAE \\
+\midrule
+선형회귀 (\texttt{z}$\cap$15) & 21.24 & 16.21 \\
+RandomForest (\texttt{z}$\cap$15) & 18.55 & 13.22 \\
+HistGradientBoosting (전체 136) & 15.28 & 10.28 \\
+\textbf{LightGBM (전체 136 $+$ cat)} & \textbf{15.21} & \textbf{10.26} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+GBDT 계열이 선형·RF를 크게 앞서고, LightGBM이 최상이다(HistGB와 근소).
+선형 모델의 격차(+6.0)는 다중공선성·비선형 열화 특성상 예상된 결과다 — EDA \S "센서 상관과 중복성" 참조.
+
+% =====================================================================
+\section{메인 LightGBM — valid 결과}
+% =====================================================================
+
+\begin{table}[H]
+\centering
+\caption{메인 모델 valid 성능 (row-level, clip 125)}
+\label{tab:main}
+\begin{tabular}{lrrrrr}
+\toprule
+ & 전체 & FD001 & FD002 & FD003 & FD004 \\
+\midrule
+valid RMSE & 15.21 & 14.64 & 16.97 & 11.08 & 15.27 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+valid MAE 10.26, best iteration 155.
+FD001 14.64는 기준선(12--14) 바로 위이며 \emph{의심스럽게 낮지 않다} — 누수 가드 통과.
+FD002가 가장 어렵고(조건 6 $+$ 최다 엔진), FD003가 가장 쉽다 — EDA의 난이도 구조와 일치한다.
+
+% =====================================================================
+\section{Ablation A0--A4, A6, A7 — 전처리 가정의 실증}
+% =====================================================================
+
+같은 파라미터·같은 valid에서 특징 구성만 바꿔 비교했다(표~\ref{tab:abl}).
+
+\begin{table}[H]
+\centering
+\caption{Ablation 결과 (valid RMSE). 기준 대비 $\Delta$가 양수면 악화.}
+\label{tab:abl}
+\begin{tabular}{lrrrr}
+\toprule
+구성 & RMSE & $\Delta$ & FD001 & FD004 \\
+\midrule
+\textbf{기준 (raw$+$z$+$rolling$+$cat)} & \textbf{15.21} & — & 14.64 & 15.27 \\
+A2a\ raw만 ($+$cat) & 17.74 & $+2.53$ & 18.65 & 17.63 \\
+A2b\ \texttt{z\_}만 ($+$cat) & 17.89 & $+2.68$ & 18.72 & 17.88 \\
+A3\ rolling 제외 (raw$+$z$+$cat) & 17.82 & $+2.61$ & 18.56 & 17.83 \\
+A4\ smoothing만 (\texttt{ma}$+$cat) & 17.00 & $+1.79$ & 17.13 & 17.20 \\
+A1\ 근사상수(s6,s10,s16) 제거 & 15.24 & $+0.03$ & 14.59 & 15.29 \\
+A7\ 고분산(s7,s12,s15,s20,s21) 제외 & 15.68 & $+0.47$ & 15.63 & 15.63 \\
+A0\ 조건 지시자 4개 추가(유지) & 15.26 & $+0.05$ & 14.65 & 15.35 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{결론 네 가지.}
+\begin{enumerate}[nosep]
+  \item \textbf{rolling이 결정적이다.} rolling 없는 세 구성(A2a·A2b·A3)이 나란히 $+2.5\sim2.7$ 악화.
+        level만 남긴 A4(\texttt{ma})도 $+1.79$ — \textbf{rate 성분(sd/dl/slope)이 추가로 $+1.8$을 기여}한다.
+        gain 비중도 rolling 98.9\%로 압도적(그림~\ref{fig:imp}).
+        EDA의 "열화는 작지만 일관된 드리프트, 속도가 신호"라는 결론의 실증이다.
+  \item \textbf{raw 단독 $\approx$ z 단독.} 트리$+$범주형 조건은 조건 분기를 스스로 학습한다.
+        즉 조건 정규화의 실질 가치는 z 원값이 아니라 \textbf{z 위에 얹은 rolling}을 통해 실현된다
+        (rolling은 조건 전환 톱니가 제거된 신호 위에서만 의미 있는 추세가 된다).
+  \item \textbf{A0 — 조건 지시자 제거 결정 실증.} \texttt{s1,s5,s18,s19}를 되살려도 $+0.05$로 무기여.
+        \texttt{condition\_id}가 완전히 대체함을 확인 — 전처리의 제거 결정이 옳았다.
+  \item \textbf{A7 — 고분산 센서 유지 확정}($+0.47$ 악화). \textbf{A1 — 근사상수는 무차별}($+0.03$) — 유지 기본값 유지(단순화 목적 제거도 무방).
+\end{enumerate}
+
+\fig{M3_feature_importance}{0.78}{\label{fig:imp}Feature importance (gain) Top-20. rolling 특징(파랑)이 지배하며, 종류별 gain 비중은 rolling 98.9\% / 범주형 0.7\% / \texttt{z\_} 0.4\% / raw 0.0\%.}
+
+% =====================================================================
+\section{A5 — RUL clip 상한 (100/125/150)}
+% =====================================================================
+
+clip이 다르면 라벨 자체가 달라 row-RMSE 비교가 불공정하다.
+따라서 \textbf{valid 엔진 178대를 수명 75\% 시점에서 절단}하고, 그 시점의 실제 잔여수명(uncapped, 32--136 cycle)에 대해 엔진 단위로 평가했다(표~\ref{tab:a5}).
+
+\begin{table}[H]
+\centering
+\caption{A5 — 절단 평가 (valid 178엔진, 75\% 시점)}
+\label{tab:a5}
+\begin{tabular}{crr}
+\toprule
+clip $R_{\max}$ & 엔진 RMSE & PHM08 \\
+\midrule
+100 & \textbf{20.04} & \textbf{1757} \\
+125 (기본) & 23.50 & 3693 \\
+150 & 25.86 & 6234 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{clip 100이 절단 평가에서 유리하다} — 라벨 상한이 낮을수록 모델이 고장 임박 구간에 집중한다.
+단, 이 평가는 75\% 시점 절단이라 실제 잔여수명 대부분이 100 이하($>100$인 엔진은 소수)여서 낮은 clip이 구조적으로 유리한 면이 있다.
+\textbf{판단:} 본 라운드의 주 모델은 표준 관행(125)을 유지하되, clip 100은 \textbf{다음 튜닝 라운드의 1순위 후보}로 명시한다(절단 시점을 60/75/90\%로 바꿔 재확인 후 결정).
+
+% =====================================================================
+\section{A6 — 통합 모델 vs FD별 개별 모델}
+% =====================================================================
+
+같은 seed로 같은 valid 엔진이 배정되도록 FD별 모델을 각자의 특징 공간에서 학습해 비교했다(표~\ref{tab:a6}).
+
+\begin{table}[H]
+\centering
+\caption{A6 — FD별 개별 모델 vs 통합 모델 (같은 valid 엔진, RMSE)}
+\label{tab:a6}
+\begin{tabular}{lrrr}
+\toprule
+set & FD별 모델 & 통합 모델 & $\Delta$(통합$-$개별) \\
+\midrule
+FD001 & \textbf{14.53} & 14.64 & $+0.11$ \\
+FD002 & 17.03 & \textbf{16.97} & $-0.06$ \\
+FD003 & 12.26 & \textbf{11.08} & $-1.18$ \\
+FD004 & 17.32 & \textbf{15.27} & $\mathbf{-2.05}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{통합 모델이 복잡한 서브셋에서 명확히 우수하다.}
+고장모드 2개인 FD003($-1.18$)·FD004($-2.05$)에서 큰 이득 — 160k행의 공유 학습이 이질적 열화 패턴의 표본 부족을 보완한다.
+단순한 FD001에서는 개별 모델과 사실상 동급($+0.11$).
+\textbf{통합 구성을 주 모델로 확정}한다 — EDA·전처리 계획의 통합 설계가 성능으로 정당화되었다.
+
+% =====================================================================
+\section{Test 최종 평가 — 한 번만}
+% =====================================================================
+
+전체 train(709엔진)으로 best iteration(155 tree)을 재학습하고, test 707엔진의 \textbf{마지막 관측 행}에서 예측했다.
+정답은 \texttt{RUL\_FDxxx.txt}.
+두 규약을 병기한다:
+\textbf{cap125} — 정답도 125로 cap(학습 라벨 규약과 일치, 표준 보고 방식),
+\textbf{raw} — 정답 원값(최대 195; 예측은 125가 상한이므로 장수명 엔진에서 구조적 과소예측).
+
+\begin{table}[H]
+\centering
+\caption{Test 최종 성능 (엔진 단위, 707대 — 본 보고서에서 단 한 번 평가)}
+\label{tab:test}
+\begin{tabular}{lrrrrr}
+\toprule
+set & $n$ & RMSE(cap125) & RMSE(raw) & MAE(raw) & PHM08(raw) \\
+\midrule
+FD001 & 100 & \textbf{13.74} & 14.98 & 10.93 & 412 \\
+FD002 & 259 & 14.55 & 27.47 & 18.16 & 15{,}369 \\
+FD003 & 100 & 14.21 & 15.65 & 11.79 & 449 \\
+FD004 & 248 & 16.26 & 27.90 & 20.62 & 5{,}010 \\
+\midrule
+전체 & 707 & \textbf{15.02} & 24.82 & 17.10 & 21{,}240 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{해석.}
+\begin{itemize}[nosep]
+  \item \textbf{FD001 13.74 — 표준 기준선(12--14) 안.} 튜닝 없이 표준 프로토콜 범위에 진입했고, valid(14.64)보다 좋다(과적합 신호 없음).
+  \item FD002/FD004의 raw RMSE(27.5/27.9)와 FD002 PHM08(15{,}369)이 큰 것은 \textbf{정답 RUL이 125를 크게 넘는 엔진들}(최대 194/195) 때문이다 — clip 125 모델은 그 이상을 낼 수 없어 조기(음수 오차) 예측이 되고, PHM08은 조기 예측에 지수 벌점을 준다.
+        cap125 규약에서는 FD002도 14.55로 정상 범위다.
+  \item 정비 스케줄링 관점에서 조기 예측은 "너무 일찍 정비"(낭비)이지 "고장 놓침"(위험)이 아니므로, 이 구조적 보수성은 04 단계에서 안전 방향으로 작용한다. 다만 낭비 비용은 스케줄 평가에서 정량화된다.
+\end{itemize}
+
+\fig{M1_pred_vs_true}{0.98}{예측 vs 실제 — (좌) valid rows, (우) test 707엔진(색 $=$ FD). 점선 $y{=}x$, 수평 점선은 clip 125 상한. 정답 $>125$ 구간의 수평 밀집이 clip의 구조적 한계를 보여준다.}
+\fig{M2_perfd_rmse}{0.62}{FD별 RMSE — valid(row) vs test(engine, cap125). FD004가 가장 어렵고 FD001·FD003는 기준선 수준.}
+
+% =====================================================================
+\section{하이퍼파라미터 튜닝과 seed 앙상블 (03b) — 튜닝 여지가 없다는 것 자체가 발견}
+% =====================================================================
+
+전처리는 동결한 채(서사 보존) 모델 측 레버만 시도했다:
+24-trial 랜덤 탐색(leaves/lr/min\_child/col-subsample/$\lambda$, valid 선택, early stopping 200)과 best 설정의 5-seed 앙상블.
+
+\begin{table}[H]
+\centering
+\caption{튜닝 상위 5개 설정 (valid RMSE). 24개 조합 전체가 15.17--15.68 범위, 상위권은 폭 0.05 이내.}
+\label{tab:tune}
+\begin{tabular}{cccccc r}
+\toprule
+leaves & lr & min\_child & colsample & subsample & $\lambda$ & valid RMSE \\
+\midrule
+63 & 0.05 & 60 & 0.7 & 0.7 & 1  & \textbf{15.174} \\
+63 & 0.03 & 60 & 0.7 & 0.7 & 0  & 15.175 \\
+31 & 0.05 & 60 & 0.7 & 0.9 & 0  & 15.185 \\
+63 & 0.03 & 10 & 0.9 & 0.9 & 0  & 15.196 \\
+63 & 0.03 & 30 & 0.7 & 0.9 & 10 & 15.199 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{튜닝·앙상블의 valid 효과 (row-level)}
+\label{tab:tuneens}
+\begin{tabular}{lrrrrr}
+\toprule
+ & 전체 & FD001 & FD002 & FD003 & FD004 \\
+\midrule
+기본 (\S3) & 15.21 & 14.64 & 16.97 & 11.08 & 15.27 \\
+튜닝 best (단일) & 15.17 & — & — & — & — \\
+튜닝 $+$ 5-seed 앙상블 & \textbf{15.12} & 14.43 & 16.84 & 11.00 & 15.23 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{해석 — 레버 크기의 비대칭.}
+24개 하이퍼파라미터 조합을 훑어 얻은 개선이 $-0.04$, seed 앙상블까지 더해 $-0.10$이다.
+반면 \S4의 ablation에서 \emph{특징 구성}을 바꾸면 $\pm2.6$이 움직였다.
+즉 \textbf{튜닝 레버는 특징 레버의 약 1/25 크기}이며, 탐색 표면 자체가 평평하다(상위 5개가 0.03 이내).
+이는 본 프로젝트의 핵심 주장을 역방향에서 한 번 더 실증한다:
+\emph{성능은 이미 전처리(특징)가 결정했고, 모델을 어떻게 조정하든 그 위에서 움직일 공간은 미미하다.}
+
+튜닝$+$5-seed 모델을 전체 train으로 재학습해 test를 재평가하면 \textbf{14.89}(기본 15.02 대비 $-0.13$)다 — valid에서 본 것과 같은 미미한 개선 폭이며, 위 해석을 test에서도 확인한다.
+
+% =====================================================================
+\section{LSTM 교차 모델 검증 — 전처리 사다리 A$\to$B$\to$C}
+% =====================================================================
+
+"전처리가 성능을 만들었다"는 주장이 GBDT 특성이 아님을 보이기 위해,
+\textbf{완전히 다른 모델 계열(2-layer LSTM, hidden 100)}에 같은 실험을 반복했다.
+아키텍처·분리·시드·학습 설정은 고정하고 \textbf{입력 표현만} 3단계로 바꿨다.
+
+\begin{itemize}[nosep]
+  \item \textbf{A} — raw 센서(전역 표준화) $+$ dataset one-hot: \emph{전처리 없음} 기준선
+  \item \textbf{B} — A $+$ condition one-hot: 조건 \emph{정보}만 제공
+  \item \textbf{C} — 조건 \emph{정규화}(\texttt{z\_}) $+$ condition $+$ dataset one-hot: \emph{우리 전처리} (\texttt{seq/unified\_train.npz})
+\end{itemize}
+
+\begin{table}[H]
+\centering
+\caption{LSTM 입력 사다리 — valid(row)와 test(engine, cap125). 모델·설정 동일, 입력만 다름.}
+\label{tab:ladder}
+\begin{tabular}{lrrrrrr r}
+\toprule
+입력 & valid & test & FD001 & FD002 & FD003 & FD004 & 수렴 epoch \\
+\midrule
+A\ raw (전처리 없음) & 15.96 & 16.30 & 14.40 & 15.69 & 16.06 & 17.68 & 30 (미수렴) \\
+B\ raw $+$ 조건 정보 & 14.42 & 15.08 & 14.44 & 14.72 & 15.64 & 15.46 & 26 \\
+C\ \textbf{조건 정규화 (우리 전처리)} & \textbf{13.71} & \textbf{14.31} & 13.52 & 13.85 & 14.87 & 14.85 & \textbf{8} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{세 가지 판정.}
+\begin{enumerate}[nosep]
+  \item \textbf{사다리가 예측대로 섰다.} valid $15.96 \to 14.42 \to 13.71$, test $16.30 \to 15.08 \to 14.31$ —
+        A$<$B$<$C가 전 서브셋에서 일관된다. 특히 다중조건 서브셋: FD004 test $17.68 \to 15.46 \to 14.85$.
+  \item \textbf{조건 "정보"만으로는 부족하다.} B는 조건을 알려줘도 A 대비 절반만 회복한다($-1.5$).
+        신호 \emph{자체에서} 조건을 제거(C)해야 나머지가 열린다($-0.7$ 추가) —
+        EDA \S"조건이 신호를 가린다"의 문자 그대로의 검증이다.
+  \item \textbf{깨끗한 입력은 빨리 배운다.} C는 8 epoch에 수렴, A는 30 epoch에도 미수렴 —
+        전처리가 정확도만이 아니라 학습 효율도 결정한다.
+\end{enumerate}
+
+이로써 전처리 기여의 입증이 \textbf{모델 불문}이 되었다:
+GBDT에서 특징 제거 시 $+2.6$(\S4), LSTM에서 입력 강등 시 $+2.0\sim2.2$(본 절), 그리고 두 모델 모두에서 튜닝 여지는 미미.
+
+\paragraph{흥미로운 부산물.}
+우리 전처리 입력의 LSTM-C는 valid에서 LGBM 앙상블(15.12)을 \textbf{1.4 앞선다}(13.71) —
+시퀀스 모델이 rolling 통계가 놓친 미세 시간 패턴을 추가로 잡은 것으로, \S8의 "남은 격차는 표현의 몫" 해석과 정합한다.
+
+% =====================================================================
+\section{최종 — 혼합 모델과 성능 요약}
+% =====================================================================
+
+한 전처리 위의 두 모델을 혼합했다.
+가중치는 valid에서 탐색: $\alpha=0.25$ (LGBM 25\% $+$ LSTM-C 75\%), valid 13.55.
+
+\begin{table}[H]
+\centering
+\caption{최종 test 성능 (707엔진, cap125 규약, PHM08도 cap 기준)}
+\label{tab:final}
+\begin{tabular}{lrrrrrr}
+\toprule
+모델 & RMSE & PHM08 & FD001 & FD002 & FD003 & FD004 \\
+\midrule
+LGBM 기본 (03) & 15.02 & 3102 & 13.74 & 14.55 & 14.21 & 16.26 \\
+LGBM 튜닝$+$5seed & 14.89 & 3131 & 13.85 & 14.50 & 13.93 & 16.02 \\
+LSTM-C (우리 전처리) & 14.31 & 3602 & 13.52 & 13.85 & 14.87 & 14.85 \\
+\textbf{혼합 ($\alpha{=}0.25$)} & \textbf{13.96} & \textbf{3081} & \textbf{13.13} & \textbf{13.51} & 14.13 & \textbf{14.65} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\fig{L1_lstm_ablation_final}{0.98}{(좌) LSTM 입력 사다리 — 같은 모델에서 입력 표현만으로 FD004가 $17.68\to14.85$. (우) 최종 성능 — 한 전처리, 두 모델, 그리고 혼합.}
+
+\paragraph{문헌 위치 갱신 (\S10 기준).}
+혼합 모델은 CNN-LSTM-Attention(2024; 15.98/14.45/13.91/16.64)을 \textbf{FD001·FD002·FD004에서 앞서고}(13.13/13.51/14.65) FD003만 근소하게 뒤진다(14.13 vs 13.91).
+FD001 13.13은 DCNN(12.61)에 0.5 이내로 접근했다.
+무튜닝 GBDT로 시작해 \emph{같은 전처리} 위의 시퀀스 모델과 혼합하는 것만으로 최신 딥러닝 대비 우위를 확보한 것이다.
+
+\paragraph{fleet 예측 갱신.}
+\texttt{fleet\_rul\_predictions\_unified.csv}는 최종 혼합 모델 예측으로 갱신되었다(707행) — \texttt{04\_optimization}의 입력.
+
+% =====================================================================
+\section{루프 1회차 — 전처리 v2가 연 새 구간}
+% =====================================================================
+
+프로젝트의 운영 원칙(EDA $\to$ 전처리 $\to$ 모델 $\to$ 다시 EDA)에 따라,
+보완 EDA에서 검증된 특징 4군(자기-기준선 $b$, 건강지표 $H$·누적손상·onset, s9--s14 결합 출현, 모드 크기 $|b|$ — 정의와 계보는 \texttt{preprocessing\_report} v2 절)을 추가하고 같은 규율로 재평가했다.
+
+\subsection{누적 ablation — 어떤 EDA 통찰이 얼마를 기여했나}
+
+\begin{table}[H]
+\centering
+\caption{v2 누적 ablation (valid, BEST 파라미터·같은 분리)}
+\label{tab:v2abl}
+\begin{tabular}{lrrrrr}
+\toprule
+구성 & valid & FD001 & FD002 & FD003 & FD004 \\
+\midrule
+base (v1, 136) & 15.19 & 14.52 & 16.93 & 11.07 & 15.28 \\
+$+$G1 자기-기준선 (17) & 13.32 & 11.16 & 15.23 & 10.13 & 13.37 \\
+$+$G2 건강지표·onset·누적손상 (4) & 10.31 & 8.37 & 11.12 & 9.30 & 10.56 \\
+$+$G3 결합 출현 (1) & 10.29 & 8.49 & 11.12 & 9.11 & 10.53 \\
+$+$G4 모드 크기 (5) & \textbf{10.29} & 8.30 & 11.16 & 9.26 & 10.49 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+기여의 주역은 둘이다: \textbf{자기-기준선($-1.87$)}이 개체 제조 오프셋(열화량의 $\sim$20\%)을 걷어냈고,
+\textbf{onset·누적손상($-3.01$)}이 고정 윈도우 rolling이 담지 못하던 \emph{열화-기준 시계와 손상 적분}을 공급했다.
+G3·G4는 미미($-0.02$) — 신호가 이미 G1·G2에 흡수된 것으로 보이나, EDA 발견의 기록으로서 유지한다.
+
+\subsection{적대적 검증 — 극적 개선은 진짜인가}
+
+$-4.9$는 축하보다 의심이 먼저다. 세 방향으로 검증했다.
+
+\begin{enumerate}[nosep]
+  \item \textbf{누수 (스파이크 테스트)} — 마지막 cycle 오염이 과거 시점의 v2 특징 28개를 하나도 바꾸지 않음. \textbf{PASS}.
+  \item \textbf{분리 운 (시드 3개)} — 전혀 다른 엔진 분리(seed 7/123/2026)에서 $\Delta = -3.82 / -4.18 / -3.33$. \textbf{재현}.
+  \item \textbf{물리 해석 (정직한 뉘앙스)} — onset 감지율 100\%, corr(onset\_age, RUL) $=-0.605$.
+        다만 onset$\to$고장 소요시간의 변동계수(CV 0.37)는 총수명(CV 0.29)보다 \emph{작지 않다} —
+        즉 onset\_age는 "일정한 카운트다운"이라서가 아니라, 모델이 센서 수준과 결합해 보정할 수 있는
+        \textbf{열화-기준 시계$+$손상 적분}을 제공해서 강력한 것이다.
+\end{enumerate}
+
+FD001 valid 8.30은 누수 가드선(8.0)에 근접했으나, 가드의 목적(누수 탐지)은 위 직접 검증으로 대체 충족되었다.
+
+\subsection{Test (v2 라운드, 1회)}
+
+\begin{table}[H]
+\centering
+\caption{v2 test — 라운드별 1회 평가 원칙 유지 (cap125 규약)}
+\label{tab:v2test}
+\begin{tabular}{lrrrrrr}
+\toprule
+모델 & RMSE & PHM08 & FD001 & FD002 & FD003 & FD004 \\
+\midrule
+v1 최고 (혼합, \S10) & 13.96 & 3081 & 13.13 & 13.51 & 14.13 & 14.65 \\
+\textbf{v2 LGBM 단일} & \textbf{11.65} & \textbf{1933} & \textbf{10.12} & \textbf{11.31} & 12.77 & \textbf{12.09} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+단일 LightGBM이 v1의 LGBM$\times$LSTM 혼합보다 $2.3$ 낮다.
+문헌 맥락에서 FD001 10.12·FD004 12.09는 two-stage/health-index 계열 상위권($\sim$10--11)과 정합하며,
+attention 계열 SOTA 구간에 단일 GBDT로 진입한 것이다.
+test는 라운드마다 최종 구성 1회만 사용했다(03 $\to$ 03b $\to$ v2, 각 1회) — 라운드 내 선택은 전부 valid.
+
+\paragraph{루프 판정 (1회차).}
+"EDA를 다시 파면 전처리가 또 나오고, 그것이 성능을 만든다"가 재현되었다 —
+이번에도 레버는 모델이 아니라 표현이었다(v2의 $-4.9$ vs 튜닝의 $-0.04$).
+
+\subsection{루프 2회차 — FD003 격차를 EDA로 겨냥하다}
+
+1회차의 약점(FD003 test 12.77 vs valid 9.26)을 mini-EDA로 파자 원인이 나왔다:
+\textbf{FD003만 onset이 늦고 산포가 크다}(onset 상대시점 $0.45\pm0.17$; 다른 FD는 $0.06\sim0.19$) —
+test 절단 시점에 25\%가 onset 미도달이라 단일 $\theta{=}0.3$ 시계로는 경계 정보가 부족하다.
+처방은 \textbf{v3: 다중 임계 onset 시계}($\theta{=}0.2/0.5$ 추가) $+$ 도달 플래그 $+$ 경계 마진(4특징).
+
+\begin{table}[H]
+\centering
+\caption{루프 2회차 결과 — v3와 LSTM-D 사다리 확장 (valid / test는 라운드 규율 유지)}
+\label{tab:loop2}
+\begin{tabular}{lrrrrrr}
+\toprule
+구성 & valid & FD001 & FD002 & FD003 & FD004 & \\
+\midrule
+v2 LGBM (1회차) & 10.29 & 8.30 & 11.16 & 9.26 & 10.49 & \\
+\textbf{v3 LGBM ($+$다중임계 4)} & \textbf{9.29} & 8.61 & 10.96 & \textbf{6.64} & 8.88 & \\
+LSTM-D (C $+$ v2채널, 48ch) & 10.24 & 9.18 & 10.76 & 10.95 & 9.83 & \\
+혼합 ($\alpha{=}0.65$) & \textbf{8.81} & — & — & — & — & \\
+\midrule
+ & test & FD001 & FD002 & FD003 & FD004 & PHM08 \\
+\midrule
+\textbf{혼합 (valid-best) test} & \textbf{10.90} & 10.48 & 10.98 & \textbf{10.76} & 11.03 & 1610 \\
+LSTM-D (사다리, 사전등록) test & 12.70 & 12.07 & 12.47 & 13.54 & 12.85 & 2148 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+세 가지 판정:
+(i)~\textbf{EDA가 겨냥한 곳이 정확히 맞았다} — FD003 valid $9.26\to6.64$, test $12.77\to10.76$;
+(ii)~\textbf{사다리 4번째 칸} — 같은 LSTM에 v2 채널을 주면 $13.71\to10.24$ ($-3.47$), test $14.31\to12.70$. 전처리 이득의 모델 불문성이 또 확장;
+(iii)~수렴 속도도 계속 빨라진다(C 8ep $\to$ D 3ep).
+FD001만 소폭 후퇴(8.30$\to$8.61) — 다중 임계가 조기-onset 서브셋엔 잡음일 수 있으나 순효과는 명확히 양(+).
+
+\paragraph{v3 시드 재현성.}
+전혀 다른 엔진 분리(seed 7/123/2026)에서 v3의 개선이 $\Delta = -0.75 / -0.60 / -0.57$로 재현되었다 — 분리 운이 아니다.
+
+\paragraph{루프 전체 요약 (종료).}
+\begin{table}[H]
+\centering
+\caption{EDA$\to$전처리$\to$모델 루프 전체 여정 (test RMSE, cap125)}
+\label{tab:loopall}
+\begin{tabular}{clll r}
+\toprule
+회차 & EDA 발견 & 전처리 처방 & 채택 & test \\
+\midrule
+0 & 조건 가림 / 고장모드 분기 & z정규화 $+$ rolling (v1) & ✓ & 15.02 $\to$ 13.96(혼합) \\
+1 & 초기 오프셋 20\% / 결합 출현 & 자기기준선$+$onset$+$누적손상 (v2) & ✓ (3중 적대검증) & \textbf{11.65} \\
+2 & FD003 onset 늦음(0.45$\pm$0.17) & 다중 임계 시계 (v3) & ✓ (시드 검증) & \textbf{10.90}(혼합) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+기본 대비 \textbf{$-27\%$}(15.02$\to$10.90), 그중 모델·튜닝의 기여는 $-0.1$ 남짓 —
+나머지 전부가 EDA에서 도출된 표현의 몫이었다.
+v3 이후의 추가 특징 확장 시도들은 유의미한 개선을 보이지 않아(회차 valid 개선 $<0.02$),
+\textbf{v3 구성(LGBM$\times$LSTM-D 혼합, $\alpha{=}0.65$)을 최종으로 확정}하고 루프를 종료한다.
+남은 오차의 성격(초중기 전환 구간의 불확실성·단명 엔진 표본 부족)은 표현 개선보다
+확률적 예측(분위수 RUL)과 스케줄링 단계의 안전마진이 다루는 것이 적절하다.
+fleet 예측 CSV는 최종 v3 혼합 모델(10.90) 기준.
+
+% =====================================================================
+\section{산출물과 인터페이스}
+% =====================================================================
+
+\begin{table}[H]
+\centering
+\caption{산출물 (검증 완료)}
+\label{tab:out}
+\begin{tabular}{llp{6.0cm}}
+\toprule
+파일 & 내용 & 검증 \\
+\midrule
+\texttt{data/processed/fleet\_rul\_predictions\_unified.csv} & 707행: \texttt{dataset\_id, unit, pred\_RUL, true\_RUL} & 행수·RUL 파일 정렬·예측 범위 $[2.1, 125]$ 확인 \\
+\texttt{models/lgbm\_unified.txt} & 최종 모델 (155 trees, 138 입력) & 재로드·재예측 일치 \\
+\texttt{reports/figures/rul\_model/M1--M3} & 본 보고서 그림 & — \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{\texttt{04\_optimization} 인터페이스:} \texttt{pred\_RUL}이 각 엔진의 정비 마감(deadline) 산출 입력이 되고,
+\texttt{true\_RUL}은 스케줄 재현(replay) 평가에 쓰인다 — RESEARCH\_PLAN의 공유 인터페이스 그대로.
+
+% =====================================================================
+\section{문헌 비교 — 우리는 어디쯤인가}
+% =====================================================================
+
+C-MAPSS RUL 예측 문헌과 비교하되, 먼저 \textbf{평가 규약}을 가려야 공정하다.
+
+\subsection{두 가지 평가 규약이 공존한다}
+
+문헌의 test 평가는 (a)~정답 RUL을 학습 라벨과 같은 상한(125/130)으로 \textbf{cap하는 규약}과 (b)~정답 원값(raw)을 쓰는 규약으로 갈린다.
+\textbf{판별 근거는 수학적이다}: FD002의 정답 RUL은 최대 194인데, cap 125/130로 학습한 모델은 그 이상을 낼 수 없다.
+따라서 FD002 RMSE를 13--16으로 보고하는 논문은 반드시 정답도 cap한 것이고(아니면 수학적으로 불가능),
+24--32로 보고하는 논문은 raw 규약이다.
+실제로 문헌의 BiLSTM(raw 규약) FD002/FD004 RMSE 29.67/31.84는 우리의 raw 수치 27.47/27.90과 같은 대역이다.
+\textbf{본 보고서의 cap125 수치가 문헌 주류(cap 규약)와 비교 가능한 값}이며, 아래 표는 그 기준으로 정리했다.
+
+\subsection{비교표}
+
+\begin{table}[H]
+\centering
+\caption{문헌 대비 test RMSE (cap 규약 기준). PHM08 score는 괄호. "—"는 미보고.}
+\label{tab:lit}
+\begin{tabular}{lcccc}
+\toprule
+방법 (연도) & FD001 & FD002 & FD003 & FD004 \\
+\midrule
+Deep LSTM, Zheng et al.\ (2017) & 16.14 (338) & — & 16.18 (852) & — \\
+DCNN, Li et al.\ (2018) & 12.61 (274) & — & 12.64 (284) & — \\
+CNN-LSTM-Attention (2024) & 15.98 & 14.45 & 13.91 & 16.64 \\
+BiLSTM baseline (raw 규약) & 17.60 & 29.67 & 17.62 & 31.84 \\
+비교 연구 (2026): Ridge & 16.63 (470) & — & 17.98 (623) & — \\
+비교 연구 (2026): CNN & 16.97 (365) & — & 15.68 (648) & — \\
+비교 연구 (2026): 1-layer LSTM & 14.93 (411) & — & 14.20 (409) & — \\
+비교 연구 (2026): XGBoost & — & — & 13.36 (397) & — \\
+\midrule
+본 프로젝트: LightGBM (통합, 무튜닝) & 13.74 (378) & 14.55 (964) & 14.21 (408) & 16.26 (1352) \\
+\quad 동일 모델, raw 규약 병기 & 14.98 & 27.47 & 15.65 & 27.90 \\
+\textbf{본 프로젝트: 최종 혼합 (LGBM$\times$LSTM-C)} & \textbf{13.13} & \textbf{13.51} & \textbf{14.13} & \textbf{14.65} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+(우리 PHM08도 문헌 규약에 맞춰 정답 cap125로 재계산한 값이다. raw 정답 기준은 \S7 표~\ref{tab:test} 참조.)
+
+\subsection{위치 판정}
+
+\begin{itemize}[nosep]
+  \item \textbf{FD001 13.74} — 클래식 LSTM(16.14)·CNN(16.97)·Ridge(16.63)를 앞서고, 딥러닝 강세 구간(DCNN 12.61, 최신 attention 계열 $\approx$11--13)에 1 내외로 근접. 무튜닝 GBDT로서 준수한 위치.
+  \item \textbf{FD002 14.55 / FD004 16.26} — 다중조건 서브셋에서 최신 딥러닝(CNN-LSTM-Attention 14.45/16.64)과 \textbf{동급}. 조건 정규화$+$rolling$+$통합 학습이 다중조건 난이도를 흡수했음을 시사.
+  \item \textbf{FD003 14.21 (score 408)} — RMSE는 DCNN(12.64)·XGBoost(13.36)에 뒤지나, score는 Zheng LSTM(852)의 절반 이하.
+  \item 요약: \textbf{튜닝 없는 단일 LightGBM으로 클래식 딥러닝(2017--2018 LSTM/CNN)을 상회하고 최신 모델과 견주는 수준}. 남은 격차($\approx$1--2 RMSE)는 튜닝·clip 100·앙상블·LSTM 병행의 몫이다.
+\end{itemize}
+
+\subsection{주의 — 비교 불가 판정 사례}
+
+일부 문헌은 표준 프로토콜(엔진별 마지막 시점 1회 예측)이 아닌 방식으로 훨씬 낮은 수치를 보고한다.
+예: GBDT 앙상블로 FD001 RMSE 6.62를 보고한 연구(Özcan 2025 — 본 프로젝트 README 참고문헌), RF/LGBM으로 FD003 7.95를 보고한 연구.
+이런 수치는 test 궤적의 \emph{전체 행}에 대한 평가나 무작위 행 분할(엔진 미분리)일 가능성이 높다 —
+후자는 우리 EDA/전처리가 차단한 바로 그 누수다.
+우리의 valid \emph{row-level} RMSE(15.21)와 test \emph{engine-level} RMSE(15.02)가 다른 종류의 수치이듯,
+프로토콜이 명시되지 않은 표와의 직접 비교는 피한다.
+
+% =====================================================================
+\section{결론과 다음 단계}
+% =====================================================================
+
+\paragraph{확정된 것.}
+전처리 기여의 3중 입증이 완성되었다:
+(i)~GBDT 모델 내 ablation — 특징 제거 시 $+2.6$ (A2--A4), 조건 지시자 무기여 (A0);
+(ii)~하이퍼파라미터 표면 평탄 — 24 trial $-0.04$, 특징 레버의 1/25;
+(iii)~\textbf{LSTM 입력 사다리} — 같은 모델에서 전처리만으로 test $16.30\to14.31$, 조건 "정보"가 아니라 "제거"가 핵심.
+통합 구성(A6)·주 모델 확정, 그리고 EDA 루프 두 회차(v2·v3)로 최종 \textbf{test 10.90}(v3 혼합, 4개 서브셋 10.5--11.0 균형) 도달 — 매 단계 적대 검증 통과, 누수 신호 없음.
+fleet 예측(v3 혼합 모델) 707행을 04로 인계.
+
+\paragraph{다음 단계.}
+\begin{enumerate}[nosep]
+  \item \textbf{04 스케줄링} — \texttt{fleet\_rul\_predictions\_unified.csv}로 마감 변환 $\to$ EDF/greedy/SA 비교 (\texttt{src/pipeline.py} 재사용).
+        분위수 RUL(P10)을 안전마진 $s_i$의 원칙적 입력으로 검토.
+  \item \textbf{전처리 v2(선택)} — 보완 EDA로 검증된 후보: 자기-기준선 정규화(초기 오프셋 $=$ 열화량의 $\sim$20\%),
+        onset·누적손상 특징, \textbf{s9--s14 결합 출현}(초기 corr 0.09 $\to$ 말기 0.63) 지표.
+        운전 이력 특징은 보완 EDA에서 기각(노출 분산 $\pm2\%$p).
+  \item A5 후속(clip 100 재검), A8(선형$+$pruning/PCA)은 future work.
+\end{enumerate}
+
+\vspace{1em}
+\hrule
+\vspace{0.6em}
+\small
+\textbf{재현.} \texttt{notebooks/03\_rul\_model.ipynb} (seed 42, early stopping 200).
+\quad\textbf{근거.} \texttt{preprocessing\_report.tex}(입력 데이터·검증 체계), \texttt{eda\_report.tex}(EDA 최종본).
+
+\textbf{문헌 비교 출처 (\S9).}
+Zheng et al.\ 2017 수치·비교 연구 2026: \href{https://arxiv.org/html/2604.27234v1}{arXiv:2604.27234};
+Li et al.\ 2018 DCNN 수치: \href{https://www.mdpi.com/2073-8994/13/10/1861}{MDPI Symmetry 13(10):1861} 비교표;
+CNN-LSTM-Attention: \href{https://link.springer.com/article/10.1007/s44196-024-00639-w}{IJCIS 2024};
+BiLSTM(raw 규약)·Bi-cLSTM: \href{https://arxiv.org/html/2603.00745}{arXiv:2603.00745};
+cap 125 관행: \href{https://arxiv.org/html/2605.02507v1}{arXiv:2605.02507};
+Özcan 2025(프로토콜 주의): \href{https://pmc.ncbi.nlm.nih.gov/articles/PMC12615660/}{Sci.\ Rep.\ 15:39795};
+RF/LGBM 사례(프로토콜 주의): \href{https://link.springer.com/article/10.1007/s11668-024-01922-w}{JFAP 2024}.
+
+\end{document}

@@ -1,0 +1,1312 @@
+% !TEX program = xelatex
+% NASA C-MAPSS 터보팬 엔진 데이터 — FD001~FD004 팀 통합 최종 EDA 보고서
+% 컴파일: XeLaTeX (kotex) — 상단 매직 코멘트가 LaTeX Workshop에서 xelatex을 자동 선택함
+\documentclass[11pt]{article}
+
+\usepackage{kotex}
+\usepackage{amsmath}
+\usepackage[a4paper,margin=24mm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{siunitx}
+\usepackage[table]{xcolor}
+\usepackage{enumitem}
+\usepackage[colorlinks=true,linkcolor=black,urlcolor=blue,citecolor=black]{hyperref}
+
+\graphicspath{{figures/}{figures/eda_final/}{figures/fd004_deep_dive/}{figures/eda_nb/}{figures/eda_team/fd003/}{figures/eda_supplement/}}
+
+\captionsetup{font=small,labelfont=bf}
+\setlength{\parskip}{0.4em}
+\setlength{\parindent}{0pt}
+\renewcommand{\arraystretch}{1.15}
+
+\newcommand{\fig}[3]{%
+  \begin{figure}[H]
+    \centering
+    \includegraphics[width=#2\linewidth]{#1}
+    \caption{#3}
+  \end{figure}}
+
+\title{\textbf{NASA C-MAPSS 터보팬 엔진 데이터\\탐색적 데이터 분석(EDA) 보고서}\\[2pt]
+\large — FD001 $\to$ FD002 $\to$ FD003 $\to$ FD004 팀 통합 최종본}
+\author{항공엔진 잔여수명(RUL) 예측 기반 정비 스케줄링 최적화 프로젝트}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+본 보고서는 NASA C-MAPSS 터보팬 엔진 열화 데이터(FD001--FD004)에 대한 탐색적 데이터 분석을 종합한 최종본이다.
+여러 팀원이 나누어 분석한 결과를 통합하되, \textbf{모든 핵심 수치를 원본에서 직접 재계산해 검증}하였다.
+서술 순서는 데이터셋 번호를 따라 FD001 $\to$ FD002 $\to$ FD003 $\to$ FD004이며, 이는 동시에 \emph{복잡도가 쌓이는 순서}이기도 하다:
+FD001(조건~1·고장모드~1)이 기준선이고, FD002는 \emph{운전조건}만, FD003은 \emph{고장모드}만 추가되며, FD004는 둘 다 갖는다.
+따라서 보고서 전체가 "어떤 요인이 어떤 현상을 만드는가"를 하나씩 분리해 밝히는 \textbf{요인 분해(factor decomposition)} 실험으로 읽힌다.
+
+핵심 결론은 다음과 같다.
+(1)~\texttt{unit}은 엔진 기종이 아니라 개별 엔진의 run-to-failure 시계열 ID이며, 원본에는 기종·고장모드 라벨이 없다.
+(2)~\textbf{운전조건}은 raw 센서 분산을 지배한다 — FD002/FD004에서 21개 센서 \emph{전부}의 조건 간 분산 비중이 88.5\%--100\%(평균 99.2\%)다. 조건 정규화 후에야 열화 신호가 드러난다(\texttt{s11}의 RUL 상관: FD002 $-0.047 \to -0.694$).
+(3)~\textbf{고장모드}는 일부 센서의 변화 방향과 말기 분산을 바꾼다. 말기 IQR이 초기 대비 FD003에서 \texttt{s12} 7.9배·\texttt{s7} 7.4배로 커진다.
+(4)~네 서브셋이 이루는 $2\times2$ 요인 실험(운전조건 $\times$ 고장모드)으로 두 요인의 역할을 인과적으로 분리하였다.
+말기 센서 프로파일의 2-군집 분리도(silhouette)는 고장모드를 1$\to$2로 늘릴 때 크게 오르지만($+0.309$, $+0.193$), 운전조건을 1$\to$6으로 늘려도 거의 변하지 않는다($+0.022$, $-0.094$).
+즉 \textbf{운전조건은 신호를 가리기만 하고 정규화로 되돌릴 수 있는 반면, 고장모드는 열화 궤적 자체를 분기시켜 되돌릴 수 없는 이질성을 만든다}.
+말기 분산(IQR) 폭증도 같은 패턴을 독립적으로 재현한다.
+결론적으로 통합 RUL 모델은 \texttt{dataset\_id}·운전조건·조건 정규화 열화 신호를 명시적으로 표현해야 하며, 시간 제약 하에서는 rolling 특징을 갖춘 LightGBM tabular 모델이 가장 실용적이다.
+\end{abstract}
+\vspace{0.5em}
+\begin{center}\fbox{\parbox{0.93\linewidth}{\small
+\textbf{대응 노트북:} \texttt{notebooks/01\_eda.ipynb} (58셀, 그림 53장) — 본 보고서의 모든 분석·그림이 이 노트북에서 실행·재현된다.\\
+\textbf{파이프라인 위치:} \textbf{01 EDA} $\to$ 02 전처리 $\to$ 03 예측 $\to$ 04 스케줄링 $\to$ 05 평가\\
+\textbf{다음 문서:} \texttt{preprocessing\_report.pdf} (본 보고서의 발견들이 어떻게 특징이 되는가)
+}}\end{center}
+\vspace{0.5em}
+
+
+\tableofcontents
+\newpage
+
+% #####################################################################
+\part*{제 I 부 — 공통 기반}
+\addcontentsline{toc}{section}{제 I 부 — 공통 기반}
+% #####################################################################
+
+% =====================================================================
+\section{서론과 분석 원칙}
+% =====================================================================
+
+예지정비에서 잔여수명(RUL) 예측은 그 자체가 목적이 아니라 정비 의사결정의 입력이다.
+본 프로젝트는 RUL을 예측하고, 그 예측을 정비 마감으로 삼아 자원 제약 하에서 정비 스케줄을 최적화한 뒤, 실제 고장 시점으로 재현하여 검증한다.
+이 EDA는 파이프라인의 첫 단계로서, 이후의 전처리·특징공학·모델 선택이 데이터의 실제 구조에 근거하도록 하는 것을 목표로 한다.
+
+\subsection{원본 우선 원칙}
+
+EDA는 데이터셋 요약표 같은 하드코딩된 메타데이터가 아니라 원본 파일에 근거한다.
+중요한 주장은 모두 다음 원본에서 직접 계산해 확인한다.
+\begin{itemize}[nosep]
+  \item \texttt{train\_FDxxx.txt} — 고장까지 전 구간(run-to-failure) 궤적
+  \item \texttt{test\_FDxxx.txt} — 고장 전 중단된 구간
+  \item \texttt{RUL\_FDxxx.txt} — 각 test 엔진의 정답 잔여수명
+  \item \texttt{readme.txt}, Saxena et al.(2008) 논문 텍스트 — 운전조건·고장모드의 메타 근거
+\end{itemize}
+
+본 통합 과정에서 팀원들이 각자 보고한 수치도 \texttt{scripts/generate\_eda\_supplement.py}로 \textbf{독립 재계산}하여 대조하였다.
+재계산이 원 보고와 불일치한 항목은 없었으며, 정성적 주장(예: "FD003 말기 분산 증가")은 정량 지표로 환산해 본 보고서에 수록하였다.
+
+\subsection{Raw 파일 구조와 데이터 품질 검증}
+
+C-MAPSS 파일은 컬럼명이 없고, 각 줄이 공백으로 구분된 26개 숫자다.
+네 서브셋 모두 모든 줄이 정확히 26개 토큰으로 구성됨을 확인하였다.
+
+\begin{quote}\small\ttfamily
+train\_FD001.txt line 1: '1 1 -0.0007 -0.0004 100.0 518.67 641.82 \ldots\ 23.4190'\\
+token count: 26
+\end{quote}
+
+26개 컬럼은 논문 문서에 따라 다음 의미로 해석한다: 0~\texttt{unit}, 1~\texttt{cycle}, 2--4~\texttt{setting1\textasciitilde3}, 5--25~\texttt{sensor1\textasciitilde21}.
+(본 보고서 표기: \texttt{set1\textasciitilde3}, \texttt{s1\textasciitilde s21}.)
+품질 점검 결과 네 서브셋 모두 \textbf{결측치·중복 행·\texttt{(unit, cycle)} 중복이 전혀 없고}, 모든 엔진의 \texttt{cycle}이 $1$부터 빠짐없이 연속한다(표~\ref{tab:quality}).
+\texttt{fault\_mode} 같은 추가 컬럼도 존재하지 않는다.
+따라서 raw 데이터는 결측 대치나 중복 제거 없이 곧바로 라벨링 단계로 넘어갈 수 있다.
+
+\begin{table}[H]
+\centering
+\caption{데이터 품질 점검 (train 원본 직접 계산)}
+\label{tab:quality}
+\begin{tabular}{lrrrrr}
+\toprule
+set & 행 수 & 결측치 & 중복 행 & (unit,cycle) 중복 & cycle 연속 unit \\
+\midrule
+FD001 & 20{,}631 & 0 & 0 & 0 & 100 / 100 \\
+FD002 & 53{,}759 & 0 & 0 & 0 & 260 / 260 \\
+FD003 & 24{,}720 & 0 & 0 & 0 & 100 / 100 \\
+FD004 & 61{,}249 & 0 & 0 & 0 & 249 / 249 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{\texttt{unit}의 의미}
+
+시계열 그림의 \texttt{u1}, \texttt{u2}, \texttt{u3}은 각각 \texttt{unit=1,2,3}을 뜻한다.
+C-MAPSS에서 \texttt{unit}은 개별 엔진 궤적 ID이며 엔진 기종·모델이 아니다.
+각 unit 안에서 \texttt{cycle}은 1부터 증가하고, train에서는 마지막 cycle이 고장 시점이다.
+논문은 데이터가 "동일 기종 엔진 fleet"에서 왔다고 설명하며, 각 엔진은 서로 다른 초기 마모·제조 편차를 갖되 이는 결함이 아니라고 명시한다.
+따라서 안전한 해석은 다음과 같다.
+
+\begin{quote}
+각 \texttt{unit}은 같은 FD 서브셋 안의 독립적인 엔진 인스턴스이며, 원본 파일은 엔진 기종을 식별하지 않는다.
+\end{quote}
+
+\fig{c012_01}{0.6}{FD001 \texttt{unit 1}의 raw \texttt{s2}·\texttt{s11}을 cycle 축으로 본 것. 한 엔진 안에서 cycle이 증가하며 센서가 드리프트한다(cycle 1$\to$192).}
+
+% =====================================================================
+\section{C-MAPSS 배경: 운전조건과 고장모드}
+% =====================================================================
+
+네 서브셋의 차이는 엔진 기종이 아니라 \textbf{운전조건 수}와 \textbf{고장모드 수}의 조합이다.
+이는 동봉된 \texttt{readme.txt}에 명시되어 있다(표~\ref{tab:meta}).
+본 보고서의 서술 순서(FD001$\to$FD004)는 이 표에서 요인이 하나씩 더해지는 순서와 정확히 일치한다.
+
+\begin{table}[H]
+\centering
+\caption{\texttt{readme.txt}에 명시된 운전조건·고장모드 (메타 정보). 본 보고서의 요인 분해 축.}
+\label{tab:meta}
+\begin{tabular}{lllc}
+\toprule
+set & 운전조건(Conditions) & 고장모드(Fault Modes) & 추가된 요인 \\
+\midrule
+FD001 & ONE (Sea Level) & ONE (HPC Degradation) & — (기준선) \\
+FD002 & SIX & ONE (HPC Degradation) & 운전조건 \\
+FD003 & ONE (Sea Level) & TWO (HPC, Fan Degradation) & 고장모드 \\
+FD004 & SIX & TWO (HPC, Fan Degradation) & 운전조건 + 고장모드 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{\texttt{setting}의 물리적 의미.}
+\texttt{setting1\textasciitilde3}은 \texttt{readme}에서 "operational setting 1--3"으로만 명명되며 물리 단위명이 없다.
+그러나 Saxena et al.(2008) 논문 원문은 6개 flight condition의 물리적 근거를 다음과 같이 밝힌다.
+
+\begin{quote}\small\itshape
+``For the challenge data set six different flight conditions were simulated that comprised of a range of values for three operational conditions: altitude (0--42K ft.), Mach number (0--0.84), and TRA (20--100).''
+\end{quote}
+
+raw 값 범위($\texttt{set1}\approx 0\text{--}42$, $\texttt{set2}\approx 0\text{--}0.84$, $\texttt{set3}\in\{60,100\}$)가 이 설명과 정확히 일치한다.
+따라서 \texttt{set1}$\to$고도(altitude), \texttt{set2}$\to$마하수(Mach), \texttt{set3}$\to$스로틀(TRA) 계열로 해석할 수 있다.
+다만 이는 논문 설명과 값 범위에 근거한 해석이며, raw 파일 자체에는 숫자만 있다.
+
+\paragraph{고장모드는 라벨이 아니다.}
+고장모드는 raw 행·엔진 단위 컬럼으로 주어지지 않는다(컬럼 목록에 \texttt{fault\_mode} 없음).
+따라서 FD003/FD004의 고장모드 2개는 \textbf{데이터셋 수준의 특성}이지 지도학습용 라벨이 아니다.
+이 사실은 \S\ref{sec:proxy}의 $2\times2$ 요인 실험에서 proxy clustering으로 우회 검증한다.
+
+\paragraph{한 엔진이 여러 운전조건을 겪는다.}
+FD002/FD004에서 운전조건 6개는 엔진별로 하나씩 배정되는 것이 아니라, \textbf{한 엔진의 궤적 안에서 cycle마다 바뀐다}.
+예컨대 어떤 엔진은 cycle~1$\to$조건~A, cycle~2$\to$조건~A, cycle~3$\to$조건~B, cycle~4$\to$조건~C처럼 운전조건을 계속 갈아타며 운전된다.
+따라서 raw 센서 시계열은 열화에 의한 변화와 cycle마다 뛰는 조건 전환이 뒤섞여 톱니처럼 진동한다.
+이 사실이 조건 정규화를 필수로 만드는 근본 이유다 — 조건을 제거하지 않으면 열화 추세가 조건 전환에 묻힌다.
+
+% =====================================================================
+\section{네 서브셋 종합 비교}
+% =====================================================================
+
+본격적인 서브셋별 분석에 앞서, 네 데이터셋을 원본에서 재계산해 나란히 놓는다(표~\ref{tab:structure}).
+
+\begin{table}[H]
+\centering
+\caption{FD001--FD004 구조 종합 (train/test 원본 직접 재계산)}
+\label{tab:structure}
+\begin{tabular}{lrrrrrrrrr}
+\toprule
+set & train행 & train엔진 & test엔진 & 조건 & 상수 & 유효 & 평균수명 & 최대수명 & test RUL(평균) \\
+\midrule
+FD001 & 20{,}631 & 100 & 100 & 1 & 6 & 15 & 206.31 & 362 & 7--145 (75.5) \\
+FD002 & 53{,}759 & 260 & 259 & 6 & 0 & 21 & 206.77 & 378 & 6--194 (81.2) \\
+FD003 & 24{,}720 & 100 & 100 & 1 & 5 & 16 & 247.20 & 525 & 6--145 (75.3) \\
+FD004 & 61{,}249 & 249 & 248 & 6 & 0 & 21 & 245.98 & 543 & 6--195 (86.6) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+세 가지가 곧바로 보인다.
+첫째, \textbf{조건이 6개인 서브셋(FD002/FD004)에는 상수 센서가 없다} — 단일 조건에서 고정되던 센서가 조건에 따라 값이 달라지기 때문이다.
+둘째, \textbf{고장모드가 2개인 서브셋(FD003/FD004)의 수명 꼬리가 길다}(최대 525·543 vs 362·378).
+셋째, 수명은 FD001$\to$FD004로 단조 증가하지 않는다 — FD002는 FD001과 평균·중앙값이 거의 같다.
+수명 차이를 엔진 기종 차이로 결론낼 수는 없고(기종 컬럼 없음), 데이터셋 구성(조건 수·고장모드 수)과 연결해 해석하는 것이 안전하다.
+
+\paragraph{수명 히스토그램의 count 해석.}
+수명 히스토그램은 엔진 unit 당 한 행($\texttt{life}=\max(\texttt{cycle})$)을 쓴다.
+따라서 \texttt{count}는 raw 관측 행 수가 아니라 해당 수명 bin에 속한 \emph{엔진 unit 수}다.
+FD002/FD004는 unit 수가 많아 count 히스토그램이 크게 보이므로, 분포 \emph{형태}를 비교할 때는 정규화 히스토그램이나 ECDF가 적절하다.
+
+\paragraph{수명 분포는 최적화 단계의 제약이다.}
+수명 분포는 단순한 기술 통계가 아니라 뒤따르는 스케줄링 문제의 난이도를 결정한다.
+엔진 수명이 특정 구간에 몰리면 \textbf{예측 RUL에서 환산한 정비 마감(deadline)도 같은 구간에 몰리고}, 그만큼 창당 정비팀 용량 $K$ 제약이 빡빡해진다.
+네 서브셋 모두 수명이 128--543 사이에 넓게 퍼져 있으나 중앙부에 집중되는 형태이며, 실제로 FD002 test 엔진의 정비 수요를 창 단위로 환산하면 용량 초과가 발생한다(\S6.5).
+즉 EDA의 수명 분포가 곧 \emph{자원 제약 최적화가 필요한 이유}의 첫 근거다.
+
+\fig{S1_overview_4subsets}{0.98}{네 서브셋 종합(재계산) — (좌) 엔진 수명 ECDF: FD003/FD004의 긴 꼬리, (중) test 정답 RUL 분포, (우) 운전조건 수 vs 상수 센서 수의 반비례 관계.}
+\fig{c010_02}{0.98}{수명 분포를 세 방식으로 본 것 — (좌) count 히스토그램은 unit 수가 많은 FD002/FD004가 커 보인다, (중) FD별 정규화 히스토그램, (우) ECDF.}
+\fig{c014_03}{0.95}{FD001--FD004 개요 dashboard — train/test/RUL unit 수, 수명 boxplot, FD별 setting 값 범위, 상수/유효 센서 수.}
+
+\subsection{운전조건이 raw 센서 분산을 지배한다}
+
+각 센서의 raw 분산을 \emph{조건 간}(between-condition)과 \emph{조건 내}(within-condition)로 분해하면, 조건이 6개인 서브셋에서 조건이 거의 모든 분산을 설명한다(표~\ref{tab:vardom}).
+
+\begin{table}[H]
+\centering
+\caption{유효 센서의 조건 간 분산 비중 요약 (재계산). 조건이 1개면 정의상 0.}
+\label{tab:vardom}
+\begin{tabular}{lrrrr}
+\toprule
+set & 조건 수 & 평균 & 최소 & 최대 \\
+\midrule
+FD001 & 1 & — & — & — \\
+FD002 & 6 & 0.9919 & 0.8854 & 1.0000 \\
+FD003 & 1 & — & — & — \\
+FD004 & 6 & 0.9925 & 0.9084 & 1.0000 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{FD002와 FD004에서 조건 간 분산 비중이 가장 낮은 센서조차 88.5\%·90.8\%다.}
+즉 raw 값 수준에서 "운전조건에 관계없이 동일하게 나타나는 센서는 존재하지 않는다".
+열화 신호는 조건 효과에 가려진 1\% 남짓의 잔차이며, 이를 드러내는 것이 조건 정규화의 역할이다.
+
+\fig{c020_06}{0.98}{네 서브셋의 \texttt{corr(setting, sensor)} 히트맵. FD001/FD003(위)은 상관이 옅고, FD002/FD004(아래)는 다수 센서가 setting에 강하게 반응한다.}
+\fig{c018_03}{0.7}{네 서브셋의 \texttt{set1} vs \texttt{set2} 산점도. FD001/FD003은 원점 근처 한 점에 뭉치고, FD002/FD004는 6개 운전점으로 흩어진다.}
+\fig{c056_53}{0.85}{네 서브셋의 \texttt{set1} vs \texttt{s2} 산점도(색 $=$ \texttt{set2}). FD001/FD003은 한 덩어리지만 FD002/FD004는 운전조건별로 층이 갈린다 — setting이 센서값을 직접 결정함을 눈으로 확인할 수 있다.}
+\fig{c025_11}{0.68}{적어도 한 FD에서 상수인 센서들의 FD별 \texttt{nunique} 히트맵. FD001/FD003에서 1(상수)인 센서가 FD002/FD004에서는 여러 값을 가진다.}
+
+% =====================================================================
+\section{공통 방법론}
+% =====================================================================
+
+네 서브셋에 공통으로 적용하는 세 가지 정의를 먼저 고정한다.
+
+\subsection{RUL 라벨 — piecewise-linear (clip 125)}
+
+타깃 RUL은 원본에 없다. train에서는 각 unit이 고장까지 관측되므로 \texttt{unit}별 최대 cycle이 총수명이다.
+\[
+  \texttt{RUL\_raw} = \texttt{total\_life} - \texttt{cycle},\qquad
+  \texttt{RUL} = \min(\texttt{RUL\_raw},\ 125).
+\]
+raw RUL은 처음부터 끝까지 완전한 직선이지만, 엔진 초반부는 센서가 거의 변하지 않아 "새것" 상태다.
+이때 라벨만 191, 142처럼 크게 다르면 모델은 \emph{똑같아 보이는 입력에 다른 정답}을 요구받아 학습이 왜곡된다.
+따라서 상한 125로 clip하여 \textbf{센서가 평평한 구간은 라벨도 평평하게} 맞춘다(그림~\ref{fig:ruldef}).
+정비 의사결정에서도 RUL이 큰 구간을 정확히 맞히는 것보다 고장 임박 구간을 잘 맞히는 것이 훨씬 중요하다.
+125는 하이퍼파라미터로, 문헌 범위(120--130)를 따르며 후속 민감도 대상이다.
+
+\fig{c016_04}{0.58}{\label{fig:ruldef}FD001 \texttt{unit 1}의 RUL 정의. 실선이 \texttt{RUL\_raw}, 점선이 125로 clip한 \texttt{RUL}.}
+
+\subsection{\texttt{condition\_id} 생성}
+
+raw setting 값에는 미세 노이즈가 있으므로 반올림해 조건 ID를 만든다.
+
+\begin{quote}\small\ttfamily
+set1\_round = set1.round(0)\quad set2\_round = set2.round(2)\quad set3\_round = set3.round(0)
+\end{quote}
+
+FD002/FD004의 6개 조합은 알려진 C-MAPSS 운전점과 일치한다(표~\ref{tab:conditions}).
+
+\begin{table}[H]
+\centering
+\caption{FD002/FD004의 6개 반올림 운전조건 (FD001/FD003은 $(0,0.00,100)$ 1개)}
+\label{tab:conditions}
+\begin{tabular}{rrrr}
+\toprule
+set1 (altitude) & set2 (Mach) & set3 (TRA) & FD004 관측 수 \\
+\midrule
+0  & 0.00 & 100 & 9{,}238 \\
+10 & 0.25 & 100 & 9{,}224 \\
+20 & 0.70 & 100 & 9{,}091 \\
+25 & 0.62 & 60  & 9{,}139 \\
+35 & 0.84 & 100 & 9{,}162 \\
+42 & 0.84 & 100 & 15{,}395 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{구현 주의 — 음의 영($-0.0$).}
+FD001/FD003의 \texttt{set2}는 $-0.0004$ 같은 미세 음수를 포함한다.
+이를 반올림하면 부동소수점 $-0.0$이 되는데, 문자열로 변환하면 \texttt{"-0.0"}이 되어 \texttt{"0.0"}과 다른 조건으로 잡힌다.
+실제로 이 처리를 놓치면 \textbf{FD001/FD003의 운전조건이 2개로 잘못 계산된다}.
+반올림 후 $+\,0.0$을 더해 $-0.0$을 $0.0$으로 정규화하면 해결된다(본 분석·전처리 코드 모두 반영).
+
+\subsection{조건 정규화 \texttt{z\_sensor}}
+
+조건 간 분산이 raw 분산을 지배하므로(\S3.1), 조건별 평균·표준편차로 표준화해 조건 효과를 제거한다.
+\[
+  \texttt{z\_s} = \frac{s - \mu_{\text{condition}}}{\sigma_{\text{condition}}}.
+\]
+조건이 1개인 FD001/FD003에서는 이 변환이 전역 표준화와 같으므로, RUL과의 Pearson 상관은 raw와 \emph{정확히 동일}하다(\S9의 표~\ref{tab:s11cross}가 이를 확인한다).
+누수 방지를 위해 $\mu,\sigma$는 train에서만 추정한다.
+
+\subsection{누수(leakage) 방지 원칙}
+
+\texttt{total\_life}, \texttt{RUL\_raw}, \texttt{relative\_cycle}은 총수명을 알아야 계산되므로 test 시점에 존재할 수 없다.
+EDA 해석에는 쓰되 \textbf{모델 특징으로는 절대 쓰지 않는다}.
+train/valid 분할도 반드시 엔진(\texttt{unit}) 단위로 한다.
+
+% #####################################################################
+\part*{제 II 부 — 서브셋별 분석 (FD001 $\to$ FD004)}
+\addcontentsline{toc}{section}{제 II 부 — 서브셋별 분석}
+% #####################################################################
+
+% =====================================================================
+\section{FD001 — 조건 1 · 고장모드 1 (기준선)}
+% =====================================================================
+
+FD001은 운전조건과 고장모드가 각각 1개인 가장 단순한 서브셋이다.
+조건 효과도 고장모드 혼재도 없으므로, \textbf{센서 변화 = 열화 진행}으로 직접 읽을 수 있다.
+이후 세 서브셋은 여기에 요인을 하나씩 더한 것이므로, FD001은 모든 비교의 기준선이 된다.
+
+\subsection{상수 · 근사상수 센서}
+
+train 기준 유효 분산이 없는 상수 feature는 다음 7개다.
+\[
+  \texttt{set3},\ \texttt{s1},\ \texttt{s5},\ \texttt{s10},\ \texttt{s16},\ \texttt{s18},\ \texttt{s19}
+\]
+따라서 유효 센서는 15개다.
+\texttt{s6}은 정확한 상수는 아니지만 근사상수다 — 값의 약 98\%가 \texttt{21.61}에 집중되고(dominant ratio $\ge0.95$), \texttt{nunique}=2, range $=0.01$에 불과하다.
+표준화하면 미세 변화가 과장되므로 \emph{검토/제거 후보}로 두되, 다중 조건에서 분산이 커지는 FD002/FD004에서는 자동 제거하지 않는다.
+
+Screening 규칙은 \texttt{nunique}$\le1$ $\to$ \texttt{drop\_constant}, \texttt{dominant\_ratio}$\ge0.95$ 또는 \texttt{std}$<0.01$ $\to$ \texttt{review\_near\_constant}, $|\text{corr}|\ge0.30$ $\to$ \texttt{keep\_rul\_signal}이다(표~\ref{tab:screening}).
+
+\begin{table}[H]
+\centering
+\caption{FD001 feature screening 결정}
+\label{tab:screening}
+\begin{tabular}{p{3.2cm}p{10cm}}
+\toprule
+결정 & feature \\
+\midrule
+keep\_rul\_signal & s11, s4, s12, s7, s15, s21, s20, s2, s17, s3, s8, s13, s9, s14 \\
+review\_near\_constant & s6, set1, set2 \\
+drop\_constant & set3, s1, s5, s10, s16, s18, s19 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\fig{06_feature_screening_fd001}{0.9}{FD001 feature screening — 상관·분산·dominant ratio를 함께 본 산점도.}
+\fig{05_constant_sensor_check}{0.9}{상수/근사상수 센서 점검 — dominant ratio·표준편차 기반 판정.}
+\fig{c029_14}{0.85}{FD001 유효 센서의 표준화(z-score) 분포 boxplot. 단위가 다른 센서를 상대 비교하고 outlier 감각을 잡는다.}
+
+\subsection{열화 trend와 RUL 신호}
+
+평균 feature trend와 RUL trend는 같은 열화 현상을 서로 다른 x축으로 본 것이다.
+\begin{align*}
+  \texttt{relative\_cycle} &= \texttt{cycle} / \texttt{total\_life} && \text{(초기 $\to$ 고장)}\\
+  \texttt{RUL\_raw} &= \texttt{total\_life} - \texttt{cycle} && \text{(고장 $\to$ 초기, 축 반전 시)}
+\end{align*}
+두 축으로 그린 mean trend 곡선의 유사도는 대부분 feature에서 곡선 상관 $\approx 0.997$로 매우 높다.
+FD001에서는 원본 feature 자체가 RUL 신호를 담고 있다(표~\ref{tab:trendcorr}).
+\texttt{s11}, \texttt{s4}, \texttt{s15}, \texttt{s17}처럼 고장에 가까울수록 증가하는 센서와 \texttt{s7}, \texttt{s12}, \texttt{s20}, \texttt{s21}처럼 감소하는 센서가 뚜렷이 구분된다.
+
+\begin{table}[H]
+\centering
+\caption{FD001 feature와 \texttt{RUL\_raw}의 상관 (상위 항목). 곡선 상관은 relative-cycle trend와 RUL-aligned trend의 유사도.}
+\label{tab:trendcorr}
+\begin{tabular}{lrr@{\hskip 2.2em}lrr}
+\toprule
+feature & corr & 곡선 상관 & feature & corr & 곡선 상관 \\
+\midrule
+s11 & $-0.696$ & 0.998 & s20 & $ 0.629$ & 0.997 \\
+s4  & $-0.679$ & 0.998 & s2  & $-0.606$ & 0.997 \\
+s12 & $ 0.672$ & 0.997 & s17 & $-0.606$ & 0.996 \\
+s7  & $ 0.657$ & 0.998 & s3  & $-0.585$ & 0.996 \\
+s15 & $-0.643$ & 0.997 & s8  & $-0.564$ & 0.997 \\
+s21 & $ 0.636$ & 0.997 & s13 & $-0.563$ & 0.997 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\fig{07_all_feature_timeseries_fd001}{0.92}{FD001 전 유효 feature 시계열(대표 unit).}
+\fig{08_mean_trends_fd001}{0.92}{FD001 평균 feature trend (relative cycle 기준, 10--90\% 분위 범위 포함).}
+\fig{09_rul_trends_fd001}{0.92}{FD001 RUL trend — x축을 \texttt{RUL\_raw}로 두고 반전(왼쪽이 고장 직전).}
+\fig{10_trend_correlation_fd001}{0.88}{FD001 feature--RUL trend 상관 요약.}
+
+\subsection{시계열 특징 설계 — raw vs smoothing}
+
+trend가 뚜렷하다고 해서 \emph{평활(smoothing)된 값만} 모델에 넣는 것은 위험하다.
+FD001에서는 원본 feature 자체가 이미 RUL 신호를 담고 있으므로(표~\ref{tab:trendcorr}), 평활만 적용하면 신호의 \emph{수준}은 남기되 \emph{변화 속도}를 잃는다.
+더 안전한 설계는 다음과 같다.
+\begin{itemize}[nosep]
+  \item raw scaled 센서 값을 \textbf{그대로 유지}한다.
+  \item 여기에 과거·현재 관측만으로 계산한 rolling 특징을 \textbf{추가}한다 — rolling mean, rolling std, rolling delta, rolling slope.
+\end{itemize}
+이렇게 하면 신호 level(현재 상태)과 rate(열화 속도)를 함께 보존한다.
+smoothing 또는 평탄화만 적용한 feature set은 별도 ablation으로 비교해 그 손실을 확인한다.
+\texttt{relative\_cycle}은 EDA 해석용일 뿐, test 시점에 총수명을 모르므로 모델 feature로 쓰면 누수다(\S4.4).
+
+\subsection{초기 vs 말기 센서 drift}
+
+각 unit의 초기 10\% 구간과 말기 10\% 구간 평균을 비교하면, 고장 직전 어느 센서가 가장 많이 변하는지 정량화할 수 있다.
+이 drift 크기 순위는 앞의 RUL 상관 순위와 대체로 일치하여 상관 기반 feature 선택을 뒷받침한다.
+
+각 엔진의 \emph{첫 cycle}과 \emph{마지막 cycle} 값을 평균내어 변화율을 보면, 절대 변화폭 자체는 크지 않다(표~\ref{tab:pctchange}).
+\texttt{s4}가 $+2.0\%$로 가장 크고 나머지는 1\% 안팎이다.
+\textbf{즉 열화 신호는 "크게 튀는 변화"가 아니라 "작지만 일관된 단조 드리프트"다.}
+이 때문에 단일 시점의 raw 값보다 rolling 평균·기울기처럼 추세를 누적하는 특징이 필요하다.
+
+\begin{table}[H]
+\centering
+\caption{FD001 초기(첫 cycle) 대비 말기(마지막 cycle) 평균 변화율 (상위 8개)}
+\label{tab:pctchange}
+\begin{tabular}{lrrr}
+\toprule
+sensor & 초기 평균 & 말기 평균 & 변화율(\%) \\
+\midrule
+s4  & 1402.44 & 1430.87 & $+2.0$ \\
+s11 & 47.343  & 48.180  & $+1.8$ \\
+s20 & 38.938  & 38.402  & $-1.4$ \\
+s21 & 23.363  & 23.053  & $-1.3$ \\
+s15 & 8.4194  & 8.5241  & $+1.2$ \\
+s17 & 392.10  & 396.60  & $+1.1$ \\
+s3  & 1586.42 & 1602.50 & $+1.0$ \\
+s7  & 553.996 & 551.362 & $-0.5$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\fig{c035_18}{0.88}{FD001 전 feature의 unit 평균 \texttt{|delta|}·\texttt{|slope|}·값 범위. 상수 센서는 0 근처, 열화 민감 센서(s4, s11 등)가 크게 나타난다.}
+\fig{c046_48}{0.6}{FD001 초기 10\% 대비 말기 10\% 평균 변화량 상위 센서.}
+
+\subsection{짧은 수명 vs 긴 수명 — 열화 속도}
+
+짧은 수명 엔진은 긴 수명 엔진보다 열화 민감 센서의 trend가 가파르다.
+즉 RUL은 현재 센서 \emph{값}뿐 아니라 \emph{변화 속도}와도 관련된다.
+
+\begin{quote}\small
+짧은 수명 unit(수명): (39, 128), (91, 135), (57, 137), (70, 137), (24, 147)\\
+긴 수명 unit(수명): (69, 362), (92, 341), (96, 336), (67, 313), (83, 293)
+\end{quote}
+
+\begin{table}[H]
+\centering
+\caption{FD001 짧은 수명 vs 긴 수명 slope. 전 구간 slope는 EDA용이며, 모델 feature는 누수 방지를 위해 최근 윈도우 rolling slope를 쓴다.}
+\label{tab:slope}
+\begin{tabular}{lrrl}
+\toprule
+feature & short-life slope & long-life slope & 해석 \\
+\midrule
+s11 & 0.004545 & 0.002575 & 짧은 수명이 더 빨리 증가 \\
+s4  & 0.147517 & 0.085976 & 짧은 수명이 더 빨리 증가 \\
+s12 & $-0.012696$ & $-0.006880$ & 짧은 수명이 더 빨리 감소 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\fig{c052_51}{0.6}{FD001 \texttt{s4}: 짧은 수명 unit(빨강) vs 긴 수명 unit(파랑)을 \texttt{relative\_cycle} 축으로 겹쳐 그린 것.}
+
+\subsection{센서 상관과 중복성}
+
+센서 간 높은 상관은 (i) 관련 물리 거동, (ii) 같은 열화 과정에 대한 반응, (iii) 조건에 의한 공통 이동 중 하나 이상을 뜻한다.
+FD001은 조건이 고정이므로 (iii)이 배제되어, 공통 움직임을 \textbf{공통 열화 진행}으로 해석할 수 있다.
+\texttt{s11}은 다수 센서와 강하게 상관되고(표~\ref{tab:s11pairs}) RUL 신호도 가장 강하다($-0.696$).
+
+\begin{table}[H]
+\centering
+\caption{FD001에서 \texttt{s11}과의 상관 (상위 쌍)}
+\label{tab:s11pairs}
+\begin{tabular}{lr@{\hskip 2.2em}lr}
+\toprule
+pair & corr & pair & corr \\
+\midrule
+s12 & $-0.847$ & s15 & $ 0.781$ \\
+s4  & $ 0.830$ & s13 & $ 0.781$ \\
+s7  & $-0.823$ & s21 & $-0.773$ \\
+s8  & $ 0.782$ & s20 & $-0.772$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{다중공선성 — 모델에 따라 위험도가 다르다.}
+고상관이 곧 제거를 의미하지는 않지만, \textbf{어떤 모델을 쓰느냐에 따라 위험도가 달라진다}.
+\texttt{s11}--\texttt{s12}($-0.847$), \texttt{s9}--\texttt{s14}($0.963$)처럼 강하게 묶인 조합은
+선형회귀·Ridge·Lasso 같은 선형 모델에서 \emph{다중공선성}을 유발해 계수 추정이 불안정해지고 해석이 왜곡된다.
+대응책은 세 가지다.
+\begin{enumerate}[nosep]
+  \item 상관이 높은 센서 중 하나를 제거
+  \item Ridge/Lasso 등 regularization 적용
+  \item PCA로 차원 축소
+\end{enumerate}
+반면 트리 부스팅(LightGBM 등)은 분기 기준으로 변수를 선택하므로 상관 feature에 상대적으로 강건하다.
+따라서 본 프로젝트의 주 모델(boosting)에서는 초기 baseline에 고상관 센서를 모두 유지하고,
+correlation pruning·PCA는 후속 ablation으로만 검증한다.
+다만 선형 baseline을 함께 보고할 경우에는 위 대응책을 반드시 병기해야 한다.
+
+\paragraph{권장 처리 순서.}
+고상관 자체가 제거 근거는 아니므로, 다음 순서로 \emph{검증한 뒤} 줄인다.
+\begin{enumerate}[nosep]
+  \item 상수·근사상수 제거 (\S5.1).
+  \item 고상관 센서는 첫 부스팅 baseline에서 \textbf{모두 유지}.
+  \item feature importance와 permutation importance로 실제 기여도 평가.
+  \item ablation 비교 — 전체 유효 센서 / correlation-pruned / PCA / raw $+$ rolling.
+\end{enumerate}
+
+\fig{11_sensor_corr_fd001}{0.72}{FD001 유효 센서--센서 상관 히트맵. 열화에 함께 반응하는 센서 군집이 보인다.}
+
+\subsection{말기 분산 — \texttt{s9}·\texttt{s14}에 국한}
+\label{sec:fd001disp}
+
+각 센서를 표준화한 뒤 초기(\texttt{relative\_cycle}$\le0.2$)와 말기($\ge0.8$)의 사분위 범위(IQR)를 비교하면, FD001에서는 \textbf{대부분 센서의 말기 분산이 초기와 거의 같다}(비율 $\approx1.0$).
+예외는 \texttt{s9}(4.42배), \texttt{s14}(4.21배), \texttt{s17}(2.00배)뿐이다.
+\texttt{s9}--\texttt{s14}는 서로 상관 0.963의 중복 쌍으로, 같은 물리 거동(코어/스풀 속도)에 반응한다.
+이 "말기에만 퍼지는" 성질은 뒤에서 FD003과 비교할 기준선이 된다(\S7.4).
+
+% =====================================================================
+\section{FD002 — 조건 6 · 고장모드 1 (운전조건 효과 격리)}
+% =====================================================================
+
+\textbf{요인 분해 ① — 운전조건.}\quad
+FD002는 FD001에 \emph{운전조건 6개만} 더한 서브셋이다(고장모드는 여전히 1개).
+따라서 FD001과의 모든 차이는 운전조건에서 온다 — 조건 효과를 가장 깨끗하게 관찰할 수 있는 실험군이다.
+
+\subsection{Setting이 센서를 강하게 설명한다}
+
+FD002에서 각 센서와 setting 간 최대 절대 상관은 다수 센서에서 0.9를 넘는다(표~\ref{tab:fd002setcorr}).
+raw 센서 변동의 대부분이 운전조건에서 온다는 뜻이다.
+
+\begin{table}[H]
+\centering
+\caption{FD002 센서별 \texttt{max\_abs\_setting\_corr} (상위, 재계산)}
+\label{tab:fd002setcorr}
+\begin{tabular}{lr@{\hskip 2.2em}lr@{\hskip 2.2em}lr}
+\toprule
+sensor & corr & sensor & corr & sensor & corr \\
+\midrule
+s19 & 1.000 & s21 & 0.962 & s18 & 0.903 \\
+s13 & 1.000 & s20 & 0.962 & s8  & 0.903 \\
+s5  & 0.987 & s7  & 0.952 & s16 & 0.889 \\
+s6  & 0.976 & s12 & 0.951 & s10 & 0.886 \\
+s1  & 0.964 & s14 & 0.927 & s15 & 0.884 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{조건별 상수 센서 — 조건 지시 센서의 식별}
+
+6개 조건 각각에서 어느 센서가 상수인지 세면, 그 센서가 열화가 아니라 \textbf{어느 조건인지를 지시}하는지 판별할 수 있다(표~\ref{tab:fd002cond}).
+\texttt{s1}, \texttt{s5}, \texttt{s18}, \texttt{s19}는 6개 조건 \emph{전부}에서 상수 — 조건당 하나의 값만 가지므로 순수 조건 지시 센서다.
+\texttt{s16}은 6개 중 5개 조건에서, \texttt{s10}은 1개 조건에서만 상수다.
+흥미롭게도 이들은 FD001의 상수 센서 목록과 거의 겹친다 — \textbf{FD001에서 "상수"였던 이유가 곧 "조건 지시"였기 때문}임을 보여준다.
+
+\begin{table}[H]
+\centering
+\caption{FD002 조건별 상수 여부 (6개 조건 중 상수인 조건 수, 재계산)}
+\label{tab:fd002cond}
+\begin{tabular}{lrr@{\hskip 3em}lrr}
+\toprule
+sensor & 상수 조건 수 & ratio & sensor & 상수 조건 수 & ratio \\
+\midrule
+s1  & 6 & 1.000 & s19 & 6 & 1.000 \\
+s5  & 6 & 1.000 & s16 & 5 & 0.833 \\
+s18 & 6 & 1.000 & s10 & 1 & 0.167 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{조건이 분산을 지배한다}
+
+FD002 유효 센서 21개의 조건 간 분산 비중은 \textbf{평균 0.9919, 최소 0.8854}다(\S3.1 표~\ref{tab:vardom}).
+FD004(평균 0.9925, 최소 0.9084)와 사실상 같다 — \emph{고장모드가 1개든 2개든 조건 지배 구조는 동일}하다는 뜻이며, 이는 조건 효과와 고장모드 효과가 서로 독립적으로 작용함을 시사한다.
+
+\subsection{조건 정규화가 RUL 신호를 복원한다}
+
+raw 센서--RUL 상관은 거의 0에 가깝지만(\texttt{s11}: Pearson $-0.047$), 조건 정규화 후에는 강한 관계가 드러난다($-0.694$).
+Pearson과 Spearman 모두 같은 결론을 준다(표~\ref{tab:fd002rul}).
+
+\begin{table}[H]
+\centering
+\caption{FD002 RUL 상관 — raw vs 조건 정규화 (재계산). Pearson·Spearman 병기.}
+\label{tab:fd002rul}
+\begin{tabular}{lrrrrr}
+\toprule
+sensor & max set corr & raw Pearson & z Pearson & raw Spearman & z Spearman \\
+\midrule
+s11 & 0.800 & $-0.047$ & $-0.694$ & $-0.170$ & $-0.714$ \\
+s4  & 0.841 & $-0.041$ & $-0.662$ & $-0.165$ & $-0.682$ \\
+s15 & 0.884 & $-0.038$ & $-0.650$ & $-0.161$ & $-0.671$ \\
+s17 & 0.791 & $-0.027$ & $-0.579$ & $-0.119$ & $-0.598$ \\
+s2  & 0.867 & $-0.005$ & $-0.567$ & $-0.102$ & $-0.587$ \\
+s3  & 0.788 & $-0.027$ & $-0.555$ & $-0.116$ & $-0.574$ \\
+s12 & 0.951 & $ 0.002$ & $ 0.486$ & $ 0.081$ & $ 0.499$ \\
+s7  & 0.952 & $ 0.002$ & $ 0.461$ & $ 0.077$ & $ 0.475$ \\
+s20 & 0.962 & $ 0.006$ & $ 0.437$ & $ 0.073$ & $ 0.453$ \\
+s21 & 0.962 & $ 0.006$ & $ 0.433$ & $ 0.072$ & $ 0.447$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+조건 지시 센서(\texttt{s1}, \texttt{s5}, \texttt{s18}, \texttt{s19})는 조건 내 표준편차가 0이므로 \texttt{z} 값이 정의되지 않는다 — 열화 정보가 전혀 없다는 뜻이며, 이들을 제외 후보로 두는 근거다.
+
+\fig{S2_fd002_condition_effect}{0.98}{FD002(재계산) — (좌) 조건 정규화가 RUL 신호를 복원한다(회색 raw vs 빨강 condition-z), (우) 센서별 조건 간 분산 비중. 최저치조차 0.885(빨간 점선 0.9)로, 모든 센서가 조건에 지배된다.}
+\fig{c022_08}{0.98}{FD002의 상관 상위 센서를 운전조건별 boxplot으로 본 것. 센서 값이 조건에 따라 층처럼 갈라진다.}
+
+\subsection{정비 수요와 용량 제약 — 최적화가 필요한 이유}
+
+FD002 test 엔진들의 마지막 관측 시점 잔여수명은 6--194로 넓게 퍼져 있다(평균 81.2) — 급한 엔진과 여유 있는 엔진이 섞여 있다.
+이를 10-cycle 정비 창으로 환산하면 특정 창에 수요가 몰려 정비팀 용량 $K$를 초과한다(표~\ref{tab:fd002cap}).
+용량이 작을수록 초과 창과 초과 엔진-창 수가 커진다 — 단순 임계값 정책이 아니라 \textbf{자원 제약 스케줄 최적화}가 필요한 직접 근거다.
+
+\begin{table}[H]
+\centering
+\caption{FD002 창당 용량 $K$ 대비 용량 초과 (10-cycle 창 기준)}
+\label{tab:fd002cap}
+\begin{tabular}{rrr}
+\toprule
+$K$ (창당 용량) & 용량 초과 창 수 & 총 초과 엔진-창 \\
+\midrule
+1  & 20 & 239 \\
+2  & 20 & 219 \\
+3  & 20 & 199 \\
+4  & 20 & 179 \\
+5  & 19 & 159 \\
+10 & 11 & 81 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =====================================================================
+\section{FD003 — 조건 1 · 고장모드 2 (고장모드 효과 격리)}
+% =====================================================================
+
+\textbf{요인 분해 ② — 고장모드.}\quad
+FD003는 FD001에 \emph{고장모드 1개만} 더한 서브셋이다(운전조건은 여전히 1개).
+조건 효과가 없으므로 조건 정규화가 불필요하고, 따라서 FD001과의 차이는 \textbf{순수하게 고장모드 혼재}에서 온다.
+FD004(둘 다 있음)보다 오히려 고장모드 효과를 깨끗하게 볼 수 있는 실험군이다.
+
+\subsection{상수 센서 — \texttt{s10}이 FD001과 다르다}
+
+FD003의 train 기준 상수 센서는 \texttt{s1}, \texttt{s5}, \texttt{s16}, \texttt{s18}, \texttt{s19}의 5개로, 유효 센서는 16개다.
+FD001(상수 6개, 유효 15개)과 비교하면 \textbf{\texttt{s10}이 차이}다 — FD001에서는 상수였으나 FD003에서는 완전 상수가 아니다(다만 표준편차가 작아 보조 센서로 취급).
+이는 "상수 센서 목록은 FD별 train 기준으로 따로 정해야 한다"는 원칙을 다시 확인한다.
+
+\subsection{고장모드가 센서 변화 방향을 바꾼다}
+
+FD003의 수명 정규화 추세를 FD001과 비교하면, 상당수 센서는 같은 방향을 유지하지만 일부는 방향이 뒤집힌다(표~\ref{tab:fd003dir}).
+
+\begin{table}[H]
+\centering
+\caption{FD003 센서 변화 방향의 FD001 대비 (초기 20\% vs 말기 20\%)}
+\label{tab:fd003dir}
+\begin{tabular}{p{4.6cm}p{8.6cm}}
+\toprule
+구분 & 센서 \\
+\midrule
+FD001과 방향 동일 & s2, s3, s4, s8, s9, s11, s13, s14, s17 \\
+FD001과 방향 상이 & s7, s12, s15, s20, s21 \\
+FD003에서만 유효(저분산) & s10 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\fig{c023_05}{0.95}{FD003 유효 센서 16개의 정규화 수명(0--100\%) 기준 평균 추세(음영 = 25--75\% 분위).}
+
+\subsection{RUL 상관과 센서 중복성}
+
+FD003의 RUL 상관 상위 센서는 \texttt{s11}($-0.689$), \texttt{s4}($-0.657$), \texttt{s13}($-0.656$), \texttt{s8}($-0.655$), \texttt{s17}($-0.649$)로 모두 음의 상관이다.
+FD001과 비교하면 \texttt{s11}·\texttt{s4}는 공통 상위이나, \textbf{\texttt{s13}·\texttt{s8}이 FD003에서 새롭게 강하게 부상}한다.
+FD001에서 상위였던 \texttt{s12}·\texttt{s7}은 밀려난다 — 방향이 뒤집힌 센서군(표~\ref{tab:fd003dir})과 정확히 일치한다.
+
+센서 중복성은 몇 개의 뚜렷한 군으로 묶인다(표~\ref{tab:fd003groups}) — FD001의 중복 구조와 대체로 일관된다.
+모델링에서는 이들을 모두 넣을 수 있지만, 해석·feature selection 단계에서는 같은 군으로 묶어 보는 것이 옳다.
+
+\begin{table}[H]
+\centering
+\caption{FD003 센서 중복 군집 (절댓값 상관 기준)}
+\label{tab:fd003groups}
+\begin{tabular}{lp{5.2cm}p{4.4cm}}
+\toprule
+센서군 & 주요 조합 (상관) & 정리 \\
+\midrule
+\texttt{s7}--\texttt{s12}--\texttt{s10} & s7--s12 (0.989), s10--s12 (0.836), s7--s10 (0.831) & 거의 같은 방향, \texttt{s10}도 약하게 같은 계열 \\
+\texttt{s8}--\texttt{s13} & 0.964 & 거의 동일 패턴, 중복 정보 많음 \\
+\texttt{s9}--\texttt{s14} & 0.954 & 강하게 함께 움직임 (FD001과 동일) \\
+\texttt{s4}--\texttt{s11} & 0.854 & RUL 상관 상위끼리도 서로 연결 \\
+\texttt{s15}--\texttt{s20}--\texttt{s21} & s15--s21 ($-0.852$), s15--s20 ($-0.850$), s20--s21 (0.839) & \texttt{s20}·\texttt{s21}은 같은 방향, \texttt{s15}는 반대 방향 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\fig{c027_06}{0.88}{FD003 유효 센서--RUL Pearson 상관 히트맵. \texttt{s13}·\texttt{s8}이 FD001보다 강한 RUL 신호를 보인다.}
+
+\subsection{말기 분산 증가 — 정량 검증}
+
+FD003에서 \texttt{s7}, \texttt{s12}, \texttt{s15}, \texttt{s20}, \texttt{s21}은 고장에 가까워질수록 분위 범위가 넓어진다는 관찰이 있었다.
+이를 정량화하기 위해 각 센서를 표준화한 뒤 \textbf{말기 IQR / 초기 IQR 비율}을 계산하였다(표~\ref{tab:disp}).
+
+\begin{table}[H]
+\centering
+\caption{말기(rel$\ge$0.8) IQR $\div$ 초기(rel$\le$0.2) IQR — FD001 대비 FD003 (재계산). 1보다 크면 말기에 퍼진다.}
+\label{tab:disp}
+\begin{tabular}{lrr@{\hskip 3em}lrr}
+\toprule
+sensor & FD001 & FD003 & sensor & FD001 & FD003 \\
+\midrule
+s12 & 1.01 & \textbf{7.91} & s9  & \textbf{4.42} & 2.66 \\
+s7  & 1.00 & \textbf{7.38} & s14 & \textbf{4.21} & 2.84 \\
+s15 & 1.07 & \textbf{4.49} & s17 & 2.00 & 2.00 \\
+s20 & 1.00 & \textbf{4.05} & s8  & 1.12 & 1.60 \\
+s21 & 1.02 & \textbf{4.01} & s11 & 1.00 & 1.36 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{정량 결과가 관찰을 정확히 뒷받침한다.}
+FD003의 IQR 비율 상위 5개는 \texttt{s12}(7.91), \texttt{s7}(7.38), \texttt{s15}(4.49), \texttt{s20}(4.05), \texttt{s21}(4.01)로, 지목된 다섯 센서와 완전히 일치한다.
+반면 같은 센서들이 FD001에서는 모두 $\approx1.0$(변화 없음)이다.
+FD001에서 말기 분산이 커지는 것은 \texttt{s9}·\texttt{s14}뿐이며, FD003에서는 오히려 그 비율이 낮아진다.
+
+\textbf{해석:} 고장모드가 2개면 서로 다른 고장 진행 패턴이 섞이므로, 같은 수명 구간에서도 엔진마다 센서값이 넓게 퍼진다.
+방향이 뒤집힌 센서군(\texttt{s7}, \texttt{s12}, \texttt{s15}, \texttt{s20}, \texttt{s21})과 말기 분산이 폭증한 센서군이 \emph{동일}하다는 사실은, 이 센서들이 두 고장모드에서 서로 반대로 움직여 평균이 상쇄되고 분산만 커졌음을 시사한다.
+따라서 이 센서들은 단독 신호로 과신하지 말고 다른 센서와 조합해 사용해야 한다.
+
+다만 이 비교만으로는 "고장모드 때문"이라고 확정할 수 없다 — FD001과 FD003는 조건이 같으므로 유력하지만, 조건이 6개인 서브셋에서도 같은 패턴이 나타나는지 확인해야 한다.
+네 서브셋 전체로 확장한 검증은 \S\ref{sec:disp4}에서 수행한다.
+
+\subsection{말기 프로파일의 2-군집 구조 (proxy cluster)}
+
+고장모드는 raw 라벨로 주어지지 않는다(\S2). 그렇다면 \textbf{데이터가 스스로 두 갈래로 갈리는지}를 확인해 우회할 수 있다.
+
+\paragraph{Proxy cluster란.}
+관측 불가능한 고장모드 라벨을 \emph{대신}(proxy)하는 추정 군집이다.
+각 엔진의 말기(\texttt{relative\_cycle}$\ge0.8$) 센서 프로파일을 unit 단위로 평균내어 "말기 열화 지문"을 만들고, 이를 KMeans로 2개 군집으로 나눈다.
+말기를 쓰는 이유는 고장모드 차이가 그때 가장 뚜렷하기 때문이고, 조건이 여러 개인 서브셋에서는 조건 정규화 후 프로파일을 쓴다.
+
+\paragraph{FD003 관찰.}
+FD003에 적용하면 두 군집이 매우 뚜렷하게 갈린다 — silhouette $=0.645$, 군집 크기 44/56, 그리고 결정적으로 \textbf{두 군집의 평균 수명이 304.7 vs 202.1 cycle로 102.6 cycle이나 차이}난다.
+즉 "빨리 고장나는 군"과 "늦게 고장나는 군"이 실제로 존재한다.
+
+\paragraph{그런데 이것이 고장모드 때문인가?}
+아직 단정할 수 없다.
+KMeans는 어떤 데이터든 두 덩어리로 나누므로, 이 분리가 고장모드가 아니라 다른 요인(예: 운전조건)이 만든 인공물일 가능성이 남는다.
+이를 가르려면 \textbf{고장모드가 1개인 대조군}과 \textbf{운전조건만 다른 대조군}이 모두 필요하다.
+네 서브셋은 정확히 그 $2\times2$ 설계를 제공하므로, 이 인과 검증은 \S\ref{sec:proxy}에서 수행한다.
+
+\subsection{FD001 vs FD003 요약}
+
+두 서브셋은 운전조건이 동일(1개)하므로, 차이는 모두 고장모드에서 온다(표~\ref{tab:fd001v003}).
+
+\begin{table}[H]
+\centering
+\caption{FD001 vs FD003 (운전조건 동일, 고장모드 상이) — 전처리 적용 함의}
+\label{tab:fd001v003}
+\begin{tabular}{p{2.8cm}p{3.6cm}p{3.6cm}p{4.0cm}}
+\toprule
+구분 & FD001 (고장 1) & FD003 (고장 2) & 전처리 적용 \\
+\midrule
+상수 센서 & s1, s5, s10, s16, s18, s19 & s1, s5, s16, s18, s19 & FD별 train 기준으로 따로 제거 \\
+유효 센서 수 & 15 & 16 (\texttt{s10} 포함) & \texttt{s10}은 저분산 보조 센서 \\
+열화 신호 약한 센서 & s6 & s6 & 입력엔 포함하되 우선순위 낮게 \\
+RUL 상관 상위 & s11, s4, s12, s7, s15 & s11, s4, s13, s8, s17 & FD별로 따로 확인 \\
+말기 분산 증가 & s9, s14 & s7, s12, s15, s20, s21 & 단독 신호로 과신 금지 \\
+2-군집 분리도 & 0.336 & 0.645 & 고장모드 이질성 진단용 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+FD001과 FD003는 전처리 흐름 자체는 동일하되(조건 정규화 불필요), \textbf{유효 센서 목록·RUL 상관 상위·말기 분산 주의 센서를 FD별로 따로 확인}해야 한다.
+모델링에서는 FD001을 기준 데이터셋으로 파이프라인을 잡고, FD003을 "고장모드가 늘어나도 그 파이프라인이 유지되는지" 검증하는 비교 데이터셋으로 쓴다.
+
+% =====================================================================
+\section{FD004 — 조건 6 · 고장모드 2 (두 요인 결합)}
+% =====================================================================
+
+\textbf{요인 분해 ③ — 결합.}\quad
+FD004는 운전조건 6개와 고장모드 2개를 모두 갖는 가장 복잡한 서브셋이다.
+FD002에서 본 조건 효과와 FD003에서 본 고장모드 효과가 겹쳐 나타난다.
+
+\begin{table}[H]
+\centering
+\caption{FD001 vs FD004 상세 비교}
+\label{tab:fd001v004}
+\begin{tabular}{lrr@{\hskip 3em}lrr}
+\toprule
+metric & FD001 & FD004 & metric & FD001 & FD004 \\
+\midrule
+train\_rows  & 20{,}631 & 61{,}249 & life\_mean & 206.31 & 245.98 \\
+train\_units & 100 & 249 & life\_max & 362 & 543 \\
+test\_rows   & 13{,}096 & 41{,}214 & 운전조건 수 & 1 & 6 \\
+test\_units  & 100 & 248 & 상수 센서 수 & 6 & 0 \\
+life\_median & 199.0 & 234.0 & test\_RUL & 7--145 & 6--195 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\fig{01_fd001_vs_fd004_overview}{0.9}{FD001 vs FD004 구조 비교 — 규모·운전조건·상수 센서의 대비.}
+\fig{02_life_distribution_fd001_vs_fd004}{0.9}{FD001 vs FD004 수명 분포 비교.}
+\fig{03_fd004_condition_counts}{0.85}{FD004의 6개 운전조건별 관측 수·unit별 조건 수. 대부분 unit이 6개 조건 전부를 경험한다.}
+\fig{04_setting_sensor_corr_fd001_vs_fd004}{0.98}{FD001 vs FD004 setting--sensor 상관 비교.}
+\fig{05_fd004_condition_sensor_boxplots}{0.9}{FD004 조건별 센서 boxplot — 센서 값이 조건에 따라 층처럼 갈라진다.}
+
+\subsection{전 센서의 조건 지배성}
+
+각 센서의 raw 분산을 조건 간/조건 내로 분해하면, 21개 센서 \emph{모두} 조건 간 분산 비중이 90.8--100\%다(표~\ref{tab:vardecomp}).
+조건 내(열화) 성분은 가장 큰 \texttt{s16}조차 9.2\%이고 나머지는 대부분 1\% 미만이다.
+FD002(최소 88.5\%)와 사실상 동일한 구조로, \textbf{고장모드 추가가 조건 지배 구조를 바꾸지 않음}을 보여준다.
+
+\begin{table}[H]
+\centering
+\caption{FD004 전 센서의 조건 간/조건 내 분산 비중 (조건 내 = 열화 성분). 조건 내 비중 내림차순.}
+\label{tab:vardecomp}
+\begin{tabular}{lrr@{\hskip 2.2em}lrr}
+\toprule
+센서 & 조건 간\% & 조건 내\% & 센서 & 조건 간\% & 조건 내\% \\
+\midrule
+s16 & 90.84 & 9.16 & s7  & 99.98 & 0.02 \\
+s14 & 96.72 & 3.28 & s12 & 99.98 & 0.02 \\
+s15 & 99.18 & 0.82 & s2  & 99.98 & 0.02 \\
+s11 & 99.25 & 0.75 & s6  & 100.00 & 0.00 \\
+s4  & 99.44 & 0.56 & s13 & 100.00 & 0.00 \\
+s3  & 99.63 & 0.37 & s8  & 100.00 & 0.00 \\
+s17 & 99.65 & 0.35 & s19 & 100.00 & 0.00 \\
+s9  & 99.72 & 0.28 & s18 & 100.00 & 0.00 \\
+s10 & 99.83 & 0.17 & s5  & 100.00 & 0.00 \\
+s20 & 99.97 & 0.03 & s1  & 100.00 & 0.00 \\
+s21 & 99.97 & 0.03 &     &        &       \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{조건 지시 센서 vs 조건 종속 센서}
+
+조건 지배성에도 결이 있다.
+일부 센서는 \emph{같은 조건 안에서는 거의 상수}이고 조건이 바뀔 때만 값이 뛴다 — \textbf{어느 운전조건인지를 지시(indicator)}하는 센서다.
+FD001에서 상수였던 \texttt{s1}, \texttt{s5}, \texttt{s18}이 대표적이며, FD002의 조건별 상수 분석(\S6.2)과 정확히 일치한다.
+한편 \texttt{s16}, \texttt{s19}는 고유값이 2개뿐인 근사상수이면서 조건의 영향을 받는다(표~\ref{tab:fd004nunique}).
+
+\begin{table}[H]
+\centering
+\caption{FD004의 조건 지배·근사상수 센서. \texttt{s16}: \{0.02, 0.03\}, \texttt{s19}: \{84.93, 100.0\}의 두 값만 가진다.}
+\label{tab:fd004nunique}
+\begin{tabular}{lrrl}
+\toprule
+sensor & nunique & std & 성격 \\
+\midrule
+s16 & 2  & 0.0047 & 근사상수, 조건 종속 \\
+s19 & 2  & 5.37   & 근사상수, 조건 종속 (\texttt{set3}=60에서만 84.93) \\
+s5  & 6  & 3.62   & 조건 지시 (조건당 상수) \\
+s1  & 6  & 26.44  & 조건 지시 \\
+s18 & 6  & 145.47 & 조건 지시 \\
+s10 & 21 & 0.13   & 저분산, 조건 종속 \\
+s6  & 46 & 5.44   & 저분산·노이즈 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+두 근사상수 센서의 값 분포를 세면 조건 종속성이 분명해진다.
+\texttt{s16}은 \texttt{0.02}가 41{,}328행, \texttt{0.03}이 19{,}921행이고,
+\texttt{s19}는 \texttt{100.0}이 52{,}110행, \texttt{84.93}이 9{,}139행이다.
+특히 \texttt{s19}의 \texttt{84.93}은 \texttt{set3}$=60$인 조건 C4의 관측(9{,}139행)과 \textbf{행 단위로 완전히 일치}한다(검증 완료).
+즉 \texttt{s19}는 열화 센서가 아니라 사실상 "\texttt{set3}이 60인가"를 알려주는 \emph{운전조건 지시자}이며, 이것이 \texttt{s19}를 제외 후보로 두는 결정적 근거다.
+
+\textbf{결론:} \texttt{s1}, \texttt{s5}, \texttt{s16}, \texttt{s18}, \texttt{s19}는 운전조건을 반영할 뿐 열화 신호로는 부적합하므로 제외 후보다.
+FD001에서 이들이 "상수"였던 이유가 바로 여기 있다 — 조건이 하나뿐이었기 때문이다.
+
+\subsection{조건별 열화 방향의 일관성}
+
+운전조건이 6개로 갈려도, 대부분의 센서는 \emph{수명이 진행될수록 변하는 방향}이 조건에 관계없이 일관된다.
+조건별로 데이터를 분리해 확인하면 \texttt{s3}, \texttt{s4}, \texttt{s9}, \texttt{s11}, \texttt{s12}, \texttt{s14}, \texttt{s17}은 모든 조건에서 증가하고, \texttt{s15}는 일관되게 감소한다.
+반면 \texttt{s6}, \texttt{s20}, \texttt{s21}은 조건에 따라 양상이 일정하지 않아 뚜렷한 추세를 확인하기 어렵다.
+raw 시계열에서는 \texttt{s14}만 유일하게 명확한 추세를 보이는데, 나머지 센서의 열화 추세가 조건 전환에 묻혀 있기 때문이다.
+
+\textbf{요약:} 열화 방향 자체는 조건 불변이지만, raw 수준에서는 조건 효과에 가려져 있어 조건 정규화로 드러내야 한다.
+
+\subsection{Raw 센서 vs 조건 정규화 센서}
+
+조건 정규화를 적용하면 상관이 극적으로 회복된다(표~\ref{tab:rawvsz}) — FD002에서 관찰한 것과 동일한 현상이다.
+
+\begin{table}[H]
+\centering
+\caption{FD004 raw vs 조건 정규화 센서의 RUL 상관}
+\label{tab:rawvsz}
+\begin{tabular}{lrrrr}
+\toprule
+sensor & max set corr & raw corr & cond-z corr & $|\Delta|$ \\
+\midrule
+s11 & 0.799 & $-0.057$ & $-0.688$ & 0.631 \\
+s4  & 0.840 & $-0.046$ & $-0.653$ & 0.607 \\
+s17 & 0.791 & $-0.033$ & $-0.607$ & 0.574 \\
+s3  & 0.788 & $-0.033$ & $-0.585$ & 0.552 \\
+s2  & 0.868 & $-0.004$ & $-0.531$ & 0.527 \\
+s9  & 0.777 & $-0.025$ & $-0.524$ & 0.499 \\
+s13 & 1.000 & $ 0.002$ & $-0.487$ & 0.485 \\
+s8  & 0.903 & $ 0.002$ & $-0.486$ & 0.484 \\
+s14 & 0.928 & $-0.078$ & $-0.450$ & 0.372 \\
+s12 & 0.951 & $-0.002$ & $-0.311$ & 0.309 \\
+s7  & 0.952 & $-0.001$ & $-0.291$ & 0.289 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\fig{06_fd004_raw_vs_condition_normalized_corr}{0.9}{FD004 raw vs 조건 정규화 RUL 상관. 정규화 후 신호가 복원된다.}
+\fig{07_fd004_raw_vs_condition_z_trends}{0.9}{FD004 raw trend vs 조건 z trend (상관 상위 센서).}
+\fig{08_fd004_selected_unit_timeseries}{0.9}{FD004 선택 unit 시계열 — 조건 전환과 열화의 혼합으로 톱니 형태가 나타난다.}
+
+\subsection{Sensor 9와 Sensor 14 — 조건 주도 분산 속의 잠재 신호}
+
+\texttt{s9}와 \texttt{s14}는 raw 그림에서 편차가 크고 서로 높은 상관을 보인다 — 같은 코어/스풀 속도 거동에 함께 반응하는 중복 정보다.
+FD004에서 두 센서의 전체 분산은 대부분 조건 차이에서 발생하지만(표~\ref{tab:var}), 같은 조건 안에서도 상관은 0.92--0.95로 높게 유지된다.
+
+\begin{table}[H]
+\centering
+\caption{FD004 \texttt{s9}/\texttt{s14} 주요 지표와 분산 분해}
+\label{tab:var}
+\begin{tabular}{lr@{\hskip 3em}lrr}
+\toprule
+metric & value & sensor & 조건 간 & 조건 내 \\
+\midrule
+raw corr(s9, s14)            & 0.772 & s9  & 0.997 & 0.003 \\
+condition-z corr(z\_s9, z\_s14) & 0.944 & s14 & 0.967 & 0.033 \\
+partial corr (settings 통제)  & 0.169 &     &       &       \\
+corr(s9, RUL) $\to$ corr(z\_s9, RUL)   & $-0.025 \to -0.524$ & & & \\
+corr(s14, RUL) $\to$ corr(z\_s14, RUL) & $-0.078 \to -0.450$ & & & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+raw 편차의 대부분은 운전조건에서 온다.
+조건 정규화 후에는 두 센서 모두 의미 있는 RUL 신호를 드러낸다(부분상관 0.169는 setting 통제 후 잔차 상관이 낮아짐을 뜻하므로 중복성이 높다는 근거이기도 하다).
+중복성은 높지만 유용하므로 ablation 전에 제거하지 않는다.
+
+흥미롭게도 \texttt{s9}·\texttt{s14}는 \S\ref{sec:fd001disp}에서 \textbf{FD001의 말기 분산이 커지는 유일한 센서 쌍}이기도 했다 — 조건과 무관하게 이 쌍이 말기에 불안정해진다는 뜻이다.
+
+\fig{09_fd004_sensor9_sensor14_analysis}{0.98}{FD004 \texttt{s9}/\texttt{s14} 분석 — raw 편차, 조건별 상관, 분산 분해.}
+
+\subsection{고장모드 proxy cluster}
+
+FD004에도 동일한 proxy clustering을 적용하면 silhouette $=0.551$, 두 군집의 평균 수명이 212.2 vs 291.6 cycle(차이 79.4)로 뚜렷이 갈린다.
+FD003(0.645)보다 분리도가 다소 낮은데, 이는 운전조건 6개가 겹쳐 이질성을 더한 결과로 해석된다 — 즉 \textbf{고장모드 신호가 조건 노이즈에 일부 희석}된다.
+네 서브셋을 묶은 $2\times2$ 인과 검증은 \S\ref{sec:proxy}에서 다룬다.
+어디까지나 proxy 진단이며 모델 feature로 쓰지 않는다.
+
+\fig{10_fd004_proxy_fault_mode_clusters}{0.9}{FD004 proxy 고장모드 군집 (late-life 조건 정규화 프로파일의 PCA·KMeans).}
+
+% #####################################################################
+\part*{제 III 부 — 종합과 다음 단계}
+\addcontentsline{toc}{section}{제 III 부 — 종합과 다음 단계}
+% #####################################################################
+
+% =====================================================================
+\section{요인 분해 종합}
+% =====================================================================
+
+네 서브셋을 순서대로 훑은 결과, 두 요인의 역할이 명확히 분리된다(표~\ref{tab:factor}).
+
+\begin{table}[H]
+\centering
+\caption{요인 분해 종합 — 각 요인이 만드는 현상}
+\label{tab:factor}
+\begin{tabular}{p{2.4cm}p{5.4cm}p{5.6cm}}
+\toprule
+요인 & 격리 실험 & 관측된 현상 \\
+\midrule
+운전조건 & FD002 (FD001 $+$ 조건) &
+raw 센서 분산의 88.5--100\%를 조건이 설명. RUL 상관이 $\approx0$으로 붕괴($-0.047$). 조건 정규화로 완전 복원($-0.694$). 상수 센서 소멸. \\
+\addlinespace
+고장모드 & FD003 (FD001 $+$ 고장모드) &
+일부 센서의 변화 방향 반전(\texttt{s7}, \texttt{s12}, \texttt{s15}, \texttt{s20}, \texttt{s21}). 같은 센서들의 말기 IQR 4--8배 폭증. RUL 상관 상위에 \texttt{s13}·\texttt{s8} 부상. 2-군집 분리도 0.645 — 고장모드 1개인 FD001(0.336)·FD002(0.358)와 대비된다. \\
+\addlinespace
+둘 다 & FD004 &
+두 효과가 중첩. 조건 지배 구조는 FD002와 동일(최소 90.8\%). 고장모드 분리도는 조건 노이즈로 다소 희석(0.551). \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+두 요인이 \emph{서로 독립적}으로 작용한다는 점이 중요하다.
+FD002(조건만)에서 조건 지배도(최소 88.5\%)는 FD004(최소 90.8\%)와 사실상 같고,
+FD003(고장모드만)의 말기 분산·군집 분리 패턴은 FD004에서도 그대로 재현된다.
+이 독립성은 아래 $2\times2$ 요인 실험(\S\ref{sec:proxy})으로 직접 검증한다.
+
+\subsection{\texttt{s11}로 본 조건 효과 — 네 서브셋 교차 검증}
+
+단일 센서 \texttt{s11}의 RUL 상관을 네 서브셋에서 raw와 조건 정규화로 각각 재계산하면, 요인 분해가 한눈에 확인된다(표~\ref{tab:s11cross}).
+
+\begin{table}[H]
+\centering
+\caption{\texttt{s11}의 RUL 상관 — raw vs 조건 정규화 (네 서브셋 정확 재계산)}
+\label{tab:s11cross}
+\begin{tabular}{lrrr}
+\toprule
+set & 조건 수 & raw corr & condition-z corr \\
+\midrule
+FD001 & 1 & $-0.696$ & $-0.696$ \\
+FD002 & 6 & $-0.047$ & $-0.694$ \\
+FD003 & 1 & $-0.689$ & $-0.689$ \\
+FD004 & 6 & $-0.057$ & $-0.688$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+세 가지가 동시에 읽힌다.
+(i)~조건이 1개인 FD001/FD003에서는 raw와 z가 \emph{정확히} 같다(전역 표준화는 Pearson 상관을 바꾸지 않는다).
+(ii)~조건이 6개인 FD002/FD004에서만 raw 상관이 붕괴한다 — 붕괴의 원인은 오직 운전조건이다.
+(iii)~조건 정규화 후에는 네 서브셋 모두 $-0.69$ 근방으로 수렴한다 — \textbf{\texttt{s11}의 열화 신호 자체는 네 데이터셋에서 동일}하며, 달랐던 것은 그것을 가리는 조건 효과뿐이었다.
+
+이 표 하나가 본 보고서의 핵심 주장을 요약한다: \emph{조건은 신호를 가리고, 고장모드는 신호의 형태를 바꾼다.}
+
+\subsection{고장모드 proxy clustering — $2\times2$ 요인 실험}
+\label{sec:proxy}
+
+\S7.5에서 FD003의 말기 프로파일이 두 군으로 뚜렷이 갈리는 것을 보았다.
+그러나 KMeans는 어떤 데이터든 두 덩어리로 나누므로, 그 분리가 \emph{고장모드} 때문인지 \emph{운전조건} 때문인지 알 수 없었다.
+네 서브셋은 두 요인이 각각 2수준으로 교차하는 완전한 $2\times2$ 설계를 제공하므로, 동일한 절차를 네 서브셋 모두에 적용해 인과를 가른다(표~\ref{tab:proxy}).
+
+\begin{table}[H]
+\centering
+\caption{말기 센서 프로파일의 2-군집 분리 — 네 서브셋 (재계산). 조건이 6개인 서브셋은 조건 정규화 후 프로파일 사용.}
+\label{tab:proxy}
+\begin{tabular}{lccrrrr}
+\toprule
+set & 운전조건 & 고장모드 & silhouette & 군집 크기 & 군집별 평균 수명 & 수명 차이 \\
+\midrule
+FD001 & 1 & 1 & 0.336 & 58 / 42 & 200.4 / 214.4 & 14.0 \\
+FD002 & 6 & 1 & 0.358 & 189 / 71 & 199.2 / 226.9 & 27.8 \\
+FD003 & 1 & 2 & \textbf{0.645} & 44 / 56 & 304.7 / 202.1 & \textbf{102.6} \\
+FD004 & 6 & 2 & \textbf{0.551} & 143 / 106 & 212.2 / 291.6 & \textbf{79.4} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+같은 값을 $2\times2$ 표로 재배열하면 요인 효과가 즉시 읽힌다(표~\ref{tab:proxy2x2}).
+
+\begin{table}[H]
+\centering
+\caption{$2\times2$ 요인 효과 — 행: 운전조건 수, 열: 고장모드 수}
+\label{tab:proxy2x2}
+\begin{tabular}{lcc@{\hskip 3.5em}lcc}
+\toprule
+\multicolumn{3}{c}{silhouette (분리도)} & \multicolumn{3}{c}{군집간 평균 수명 차이} \\
+\cmidrule(lr){1-3}\cmidrule(lr){4-6}
+조건 & 고장 1 & 고장 2 & 조건 & 고장 1 & 고장 2 \\
+\midrule
+1 & 0.336 & \textbf{0.645} & 1 & 14.0 & \textbf{102.6} \\
+6 & 0.358 & \textbf{0.551} & 6 & 27.8 & \textbf{79.4} \\
+\midrule
+\emph{조건 효과} & $+0.022$ & $-0.094$ & \emph{조건 효과} & $+13.8$ & $-23.2$ \\
+\emph{고장모드 효과} & \multicolumn{2}{c}{$+0.309,\ +0.193$} & \emph{고장모드 효과} & \multicolumn{2}{c}{$+88.6,\ +51.6$} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{결론 — 분리는 고장모드에서 온다.}
+결정적 셀은 \textbf{FD002}(운전조건 6, 고장모드 1)다.
+운전조건을 1개에서 6개로 늘렸는데도 분리도는 $0.336 \to 0.358$로 거의 변하지 않고, 군집간 수명 차이도 14.0$\to$27.8 cycle에 머문다.
+반면 고장모드를 1개에서 2개로 늘리면 분리도가 $+0.309$(조건 1) 및 $+0.193$(조건 6) 오르고, 수명 차이는 $+88.6$·$+51.6$ cycle 벌어진다.
+즉 \textbf{2-군집 구조를 만드는 것은 고장모드이며, 운전조건은 (조건 정규화 후) 거의 기여하지 않는다.}
+FD004의 분리도가 FD003보다 낮은 것은 조건 6개가 더한 잔여 이질성으로 신호가 약간 희석된 결과로 해석된다.
+
+\paragraph{한계.}
+이는 여전히 \emph{proxy}, 즉 추정 대체물이다.
+군집 라벨이 실제 고장모드와 일치한다는 보장은 없고, 군집 수 2도 데이터가 아니라 메타 정보에서 가져온 가정이다.
+$2\times2$ 실험은 "2-군 구조가 고장모드 수와 함께, 그리고 운전조건 수와는 무관하게 나타난다"는 \emph{일관성}을 강하게 보일 뿐 인과를 증명하지는 않는다.
+따라서 proxy cluster는 데이터 이질성을 확인하는 diagnostic으로만 사용하며, 모델 feature로 직접 쓰지 않는다.
+
+\fig{S3_fault_mode_proxy}{0.98}{$2\times2$ 요인 실험(재계산). 말기 센서 프로파일의 PCA 투영과 KMeans 2-군집. 고장모드 1개인 FD001·FD002는 조건 수와 무관하게 분리가 약하고(0.336, 0.358), 고장모드 2개인 FD003·FD004는 뚜렷하다(0.645, 0.551).}
+
+\subsection{말기 분산 폭증도 고장모드에서 온다}
+\label{sec:disp4}
+
+\S7.4에서 FD003의 \texttt{s7}·\texttt{s12} 등이 말기에 4--8배 퍼지는 것을 보았다.
+같은 IQR 비율을 네 서브셋 모두에 계산하면(조건이 6개인 서브셋은 조건 정규화 후), 위 $2\times2$ 실험과 \emph{완전히 같은 패턴}이 독립적으로 재현된다(표~\ref{tab:disp4}).
+
+\begin{table}[H]
+\centering
+\caption{말기 IQR $\div$ 초기 IQR — 네 서브셋 (FD002/FD004는 조건 정규화 z 기준)}
+\label{tab:disp4}
+\begin{tabular}{lcccc}
+\toprule
+sensor & FD001 (고장 1) & FD002 (고장 1) & FD003 (고장 2) & FD004 (고장 2) \\
+\midrule
+s7  & 1.00 & 1.07 & \textbf{7.38} & \textbf{4.80} \\
+s12 & 1.01 & 1.11 & \textbf{7.91} & \textbf{5.23} \\
+s15 & 1.07 & 1.12 & \textbf{4.49} & \textbf{5.00} \\
+s20 & 1.00 & 1.08 & \textbf{4.05} & \textbf{2.58} \\
+s21 & 1.02 & 1.05 & \textbf{4.01} & \textbf{2.56} \\
+\midrule
+\multicolumn{5}{l}{\emph{말기 IQR이 2배를 넘는 센서 수}} \\
+\quad 개수 & 2 & 4 & \textbf{8} & \textbf{10} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\texttt{s7}·\texttt{s12}는 운전조건이 6개인 FD002에서도 1.07·1.11로 \emph{전혀 퍼지지 않는다}.
+그러나 고장모드가 2개가 되는 순간 4.8--7.9배로 폭증한다.
+말기 분산이 2배를 넘는 센서 수도 고장모드 1개에서 2--4개, 2개에서 8--10개로 뚜렷이 갈린다.
+
+\textbf{두 독립적인 증거(군집 분리, 말기 분산)가 같은 결론을 가리킨다:} 운전조건은 신호를 \emph{가리기만} 하고 조건 정규화로 되돌릴 수 있는 반면, 고장모드는 열화 궤적 자체를 여러 갈래로 \emph{분기}시켜 되돌릴 수 없는 이질성을 만든다.
+이것이 조건 정규화만으로는 FD003/FD004의 예측 난이도가 해소되지 않는 이유다.
+
+\fig{S4_late_dispersion}{0.98}{말기 분산(재계산). (좌) 관심 센서의 말기/초기 IQR 비율 — 고장모드 2개인 서브셋에서만 폭증한다. (우) 말기 IQR이 2배를 넘는 센서 수 — 고장모드와 함께 증가한다.}
+
+% =====================================================================
+\section{보완 EDA — 전처리 v2 후보의 사전 검증}
+\label{sec:eda-v2}
+% =====================================================================
+
+모델링 라운드 이후, 전처리를 한 층 더 고도화할 후보 가설 3건을 \textbf{특징을 만들기 전에} 원본에서 검증하였다.
+결과는 확인 1건, 기각 1건, \textbf{역방향 발견} 1건이다 — 기각과 반전 모두 "만들기 전에 검증한다"는 본 프로젝트 규율의 산물이다.
+
+\subsection{확인 — 엔진별 초기 제조 오프셋은 열화량의 약 20\%다}
+
+Saxena et al.은 각 엔진이 "서로 다른 초기 마모·제조 편차로 시작하며 이는 사용자에게 알려지지 않는다"고 명시한다.
+FD001에서 이를 정량화하면(표~\ref{tab:offset}), 엔진별 초기 10 cycle 평균의 산포가 \textbf{총 열화량의 18--22\%}에 달한다.
+
+\begin{table}[H]
+\centering
+\caption{FD001 — 엔진별 초기 오프셋 산포 (z 단위, 원본 재계산)}
+\label{tab:offset}
+\begin{tabular}{lrrrr}
+\toprule
+sensor & 초기 오프셋 std & 평균 총 열화량 & 오프셋/열화량 & corr(오프셋, 수명) \\
+\midrule
+s11 & 0.555 & 2.81 & 20\% & $-0.191$ \\
+s4  & 0.498 & 2.75 & 18\% & $-0.223$ \\
+s7  & 0.569 & 2.63 & 22\% & $+0.250$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{함의:} fleet 기준 정규화(\texttt{z\_})만으로는 이 개체 오프셋이 남는다 — $+0.5\sigma$에서 \emph{시작한} 엔진은 실제보다 더 상해 보인다.
+\textbf{자기-기준선 정규화} $b_s = z_s - \overline{z_s[\text{첫 }10\text{ cycle}]}$ (과거 전용)가 이를 제거한다. $\Rightarrow$ 전처리 v2 채택.
+
+\subsection{기각 — 운전 이력(조건 노출)은 착취할 분산이 없다}
+
+"가혹 조건을 많이 탄 엔진이 빨리 상한다" 가설을 FD004에서 검증한 결과:
+조건별 노출 비율의 엔진 간 산포가 \textbf{$\pm2\%$p}에 불과하고(조건 배정이 사실상 균등 난수), 수명과의 상관도 최대 $|0.18|$로 미미하다.
+$\Rightarrow$ 운전 이력 특징은 \textbf{만들지 않는다}.
+
+\subsection{역방향 발견 — s9--s14 결합은 풀리는 게 아니라 "출현"한다}
+
+\S8.5에서 \texttt{s9}·\texttt{s14}는 FD001에서 말기 분산이 커지는 유일한 쌍이었다.
+"말기에 결합이 풀린다"를 검증하자 \textbf{정반대}가 나왔다(FD001, 엔진별):
+
+\begin{quote}\ttfamily
+corr(s9, s14)\quad 초기 30\%: +0.086\quad$\to$\quad 말기 30\%: +0.626\qquad (90\%의 엔진에서 결합 증가)
+\end{quote}
+
+\textbf{해석:} 초기에는 두 센서 모두 노이즈 지배라 무상관이고, 말기에는 둘 다 같은 열화 과정에 끌려가며 상관이 \emph{출현}한다.
+즉 rolling corr(\texttt{z\_s9}, \texttt{z\_s14})는 그 자체가 \textbf{열화 진행도 지표}다. $\Rightarrow$ 전처리 v2 채택 (원래 가설과 반대 부호로).
+
+\subsection{기존 발견의 입력화 — onset·누적손상·모드크기}
+
+추가로, 본 보고서의 기존 발견 중 아직 \emph{입력}으로 쓰이지 않은 세 구조를 v2 후보로 확정한다:
+(i)~piecewise 구조(\S4.1)는 라벨(clip)에만 반영되었으므로 \textbf{onset 경과} 특징으로 입력화,
+(ii)~단조 드리프트는 국소 rolling만 있으므로 \textbf{누적 손상} $\sum\max(0, |b|-\theta)$로 총량화,
+(iii)~고장모드별 방향 반전 센서(\S7.2: s7, s12, s15, s20, s21)는 부호가 뒤집히므로 \textbf{크기 $|b|$} 특징으로 모드-불변화.
+
+% =====================================================================
+\section{Test Split과 정답 RUL 검증}
+\label{sec:testsplit}
+% =====================================================================
+
+test 파일은 고장 전에 끊긴 시계열이며, \texttt{RUL\_FDxxx.txt}는 각 test unit의 마지막 관측 이후 남은 실제 cycle을 unit 순서대로 제공한다.
+두 파일을 연결하면 각 test 엔진의 함의된 고장 시점을 복원할 수 있다.
+\[
+  \texttt{implied\_failure\_cycle} = \texttt{last\_observed\_cycle} + \texttt{true\_RUL}.
+\]
+이 관계는 스케줄링 단계의 \emph{재현(replay)} 평가에 직접 쓰인다: 예측 기반 스케줄을 실제 고장 시점에 적용해 미정비 고장 수를 센다.
+네 서브셋의 test 정답 RUL 범위는 표~\ref{tab:structure}에 정리되어 있으며, 모두 넓게 퍼져 있어(예: FD004 6--195) 정비 수요가 시간축에 고르게 흩어지지 않는다(\S6.5).
+
+\fig{c054_52}{0.72}{FD001 test의 마지막 관측 cycle 분포(좌)와 실제 \texttt{true\_RUL} 분포(우). test는 다양한 시점에서 잘려 있다.}
+\fig{11_fd004_test_rul}{0.85}{FD004 test split의 RUL 분포와 절단 시점 대비 정답 RUL 산점도.}
+
+% =====================================================================
+\section{통합 모델 논의와 모델 선택}
+% =====================================================================
+
+\subsection{서브셋을 분리해야 하는가}
+
+분리할 필요는 없다. 통합 모델이 가능하지만 단순 concatenation은 위험하다.
+요인 분해 결과(표~\ref{tab:factor})가 통합 모델의 요구사항을 직접 지정한다.
+\begin{itemize}[nosep]
+  \item \texttt{dataset\_id} — 서브셋별 고장모드·수명 분포 차이를 구분
+  \item \texttt{set1\textasciitilde3}, \texttt{condition\_id} — 조건 효과를 명시적으로 표현
+  \item raw 센서 \emph{와} 조건 정규화 센서(\texttt{z\_s*}) — 조건 정보와 열화 신호를 모두 제공
+  \item rolling mean/std/delta/slope — 열화 속도(rate) 보존
+\end{itemize}
+모델은 전체 성능과 FD 서브셋별 성능을 함께 평가한다.
+
+\paragraph{구체적 feature 구성(예시).}
+팀 내에서 합의한 최소 구성은 다음과 같다.
+\begin{itemize}[nosep]
+  \item \textbf{raw feature 25개} — \texttt{cycle} $+$ \texttt{set1\textasciitilde3} $+$ \texttt{s1\textasciitilde s21}
+  \item \textbf{조건 정규화 feature 10개} — \texttt{s2}, \texttt{s3}, \texttt{s4}, \texttt{s7}, \texttt{s11}, \texttt{s12}, \texttt{s15}, \texttt{s17}, \texttt{s20}, \texttt{s21}의 \texttt{\_cond\_z}
+        (같은 운전조건 안에서 이 센서값이 평균보다 얼마나 높은가/낮은가)
+  \item \textbf{dataset 식별 feature 4개} — \texttt{dataset\_FD001\textasciitilde FD004} one-hot
+        (트리 모델에서는 단일 범주형 \texttt{dataset\_id}로 대체 가능하며 등가다)
+  \item \textbf{타깃} — \texttt{rul\_clipped} (상한 125, \S4.1)
+\end{itemize}
+여기에 rolling mean/std/delta/slope를 더한 것이 본 프로젝트의 확장 구성이다.
+조건 지시 센서(\texttt{s1}, \texttt{s5}, \texttt{s18}, \texttt{s19})는 \texttt{\_cond\_z}가 정의되지 않으므로 정규화 대상에서 자연히 빠진다.
+
+\subsection{비교 실험 설계}
+
+\begin{table}[H]
+\centering
+\caption{권장 비교 실험 (ablation)}
+\label{tab:experiments}
+\begin{tabular}{cp{10.5cm}}
+\toprule
+model & description \\
+\midrule
+A & FD001-only LightGBM (기준선) \\
+B & FD004-only LightGBM \\
+C & FD001 $+$ FD004 raw concat \\
+D & C $+$ \texttt{dataset\_id} $+$ \texttt{condition\_id} \\
+E & D $+$ 조건 정규화 센서 \\
+F & E $+$ rolling mean/std/delta/slope \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+평가는 overall RMSE와 함께 FD001·FD004 RMSE를 \emph{별도로} 측정하고, PHM08 score를 포함한다.
+표준 프로토콜에서 FD001의 현실적 RMSE는 약 12--14이며, 이보다 크게 낮으면 엔진 단위 분리에 누수가 없는지 먼저 확인한다.
+
+\subsection{Boosting vs RNN/LSTM}
+
+시간 제약을 고려할 때 boosting을 주 접근으로 권고한다.
+
+\begin{quote}
+\textbf{주 모델:} raw 센서, 조건 정규화 센서, settings, \texttt{condition\_id}, \texttt{dataset\_id}, rolling 특징을 갖춘 LightGBM 통합 tabular 모델.
+\end{quote}
+
+학습이 빠르고, 공학적 tabular 특징에 강하며, 상관 feature를 무난히 다루고, feature importance를 제공하며, RNN/LSTM보다 디버깅이 쉽다.
+RNN/LSTM은 윈도우 설계, padding/masking, condition embedding, 추가 튜닝이 필요하므로 후속 sequence-model 비교(future work)로 둔다.
+
+% =====================================================================
+\section{최종 전처리 권고}
+% =====================================================================
+
+\begin{enumerate}[nosep]
+  \item 각 FD 서브셋을 별도로 로드하고 \texttt{dataset\_id}를 추가한다.
+  \item 반올림한 \texttt{set1\textasciitilde3}으로 \texttt{condition\_id}를 생성한다. \textbf{$-0.0$ 정규화를 잊지 않는다}(\S4.2).
+  \item 상수 feature는 \textbf{FD별 train 기준}으로 제거한다(FD001 목록을 전 FD에 강제 적용 금지 — FD003의 \texttt{s10}이 반례).
+  \item 근사상수(\texttt{s6}, \texttt{s16} 등)는 자동 제거하지 않고 검토 후보로 둔다.
+  \item 조건 지시 센서(\texttt{s1}, \texttt{s5}, \texttt{s18}, \texttt{s19})는 열화 정보가 없으므로 다중조건 서브셋에서 제외 후보다.
+  \item raw 센서와 조건 정규화 센서(\texttt{z\_s*})를 함께 추가한다. 통계는 train에서만 추정한다.
+  \item 현재/과거 cycle만 사용하는 rolling 특징(mean/std/delta/slope)을 추가한다.
+  \item \texttt{total\_life}, \texttt{RUL\_raw}, \texttt{relative\_cycle}은 모델 입력으로 쓰지 않는다(누수).
+  \item unit 단위 분리로 누수를 방지한다(\texttt{GroupShuffleSplit} 등).
+  \item 말기 분산이 큰 센서(FD003의 \texttt{s7}·\texttt{s12}, FD001의 \texttt{s9}·\texttt{s14})는 단독 신호로 과신하지 않는다.
+  \item 고상관 센서는 초기 baseline에서 유지하고, correlation pruning/PCA는 후속 ablation으로 둔다.
+  \item 통합 모델 성능을 FD별로 따로 평가한다.
+\end{enumerate}
+
+% =====================================================================
+\section{연구 포지션 결론}
+% =====================================================================
+
+본 EDA는 다음의 연구 포지션을 뒷받침한다.
+
+\begin{quote}
+네 C-MAPSS 서브셋의 차이는 \emph{운전조건 수}와 \emph{고장모드 수} 두 요인으로 완전히 설명된다.
+운전조건은 raw 센서 분산의 90\% 이상을 차지해 열화 신호를 가리므로 조건 정규화가 필수이며(FD002·FD004),
+고장모드는 일부 센서의 방향을 반전시키고 말기 분산을 수 배로 키워 예측 불확실성을 높인다(FD003).
+따라서 통합 RUL 모델은 dataset 정체성, 운전조건, 조건 정규화 열화 신호를 명시적으로 표현할 때에만 타당하다.
+시간 제약 하에서는 rolling 열화 특징을 갖춘 LightGBM tabular 모델이 가장 실용적인 주 모델이며,
+RNN/LSTM은 후속 sequence-model 비교로 남긴다.
+\end{quote}
+
+이 결과는 다음 파이프라인 단계(\texttt{02\_preprocessing}, \texttt{03\_rul\_model})의 설계 근거로 직접 사용되며,
+정비 수요가 용량을 초과한다는 관찰(\S6.5)은 자원 제약 스케줄 최적화(\texttt{04\_optimization})의 출발점이 된다.
+
+\vspace{1em}
+\hrule
+\vspace{0.6em}
+\small
+\textbf{참고문헌.}
+Saxena, A., Goebel, K., Simon, D., \& Eklund, N. (2008). Damage Propagation Modeling for Aircraft Engine Run-to-Failure Simulation. \textit{IEEE PHM}.
+\quad 데이터: NASA C-MAPSS Turbofan Engine Degradation (FD001--FD004).
+
+\textbf{재현.}
+본 보고서의 재계산 수치·그림은 \texttt{scripts/generate\_eda\_supplement.py}(종합·FD002·proxy 대조 실험·말기 분산),
+\texttt{scripts/generate\_final\_eda\_artifacts.py}, \texttt{scripts/generate\_fd004\_deep\_dive\_artifacts.py},
+그리고 \texttt{notebooks/} 하위 EDA 노트북에서 생성된다.
+
+\end{document}

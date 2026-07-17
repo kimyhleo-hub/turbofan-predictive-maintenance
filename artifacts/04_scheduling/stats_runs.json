@@ -1,0 +1,162 @@
+[
+ {
+  "grp": "robust",
+  "seed": 1000,
+  "fail": 48,
+  "waste": 1133.0,
+  "sec": 4.6,
+  "fev": 24000
+ },
+ {
+  "grp": "efficiency",
+  "seed": 1000,
+  "fail": 100,
+  "waste": 1393.0,
+  "sec": 4.4,
+  "fev": 24000
+ },
+ {
+  "grp": "robust",
+  "seed": 1037,
+  "fail": 48,
+  "waste": 1133.0,
+  "sec": 4.5,
+  "fev": 24000
+ },
+ {
+  "grp": "efficiency",
+  "seed": 1037,
+  "fail": 100,
+  "waste": 1393.0,
+  "sec": 4.8,
+  "fev": 24000
+ },
+ {
+  "grp": "robust",
+  "seed": 1074,
+  "fail": 48,
+  "waste": 1133.0,
+  "sec": 4.7,
+  "fev": 24000
+ },
+ {
+  "grp": "efficiency",
+  "seed": 1074,
+  "fail": 100,
+  "waste": 1393.0,
+  "sec": 4.5,
+  "fev": 24000
+ },
+ {
+  "grp": "robust",
+  "seed": 1111,
+  "fail": 48,
+  "waste": 1133.0,
+  "sec": 4.0,
+  "fev": 24000
+ },
+ {
+  "grp": "efficiency",
+  "seed": 1111,
+  "fail": 100,
+  "waste": 1393.0,
+  "sec": 4.0,
+  "fev": 24000
+ },
+ {
+  "grp": "robust",
+  "seed": 1148,
+  "fail": 48,
+  "waste": 1133.0,
+  "sec": 4.2,
+  "fev": 24000
+ },
+ {
+  "grp": "efficiency",
+  "seed": 1148,
+  "fail": 100,
+  "waste": 1393.0,
+  "sec": 4.3,
+  "fev": 24000
+ },
+ {
+  "grp": "robust",
+  "seed": 1185,
+  "fail": 48,
+  "waste": 1133.0,
+  "sec": 4.0,
+  "fev": 24000
+ },
+ {
+  "grp": "efficiency",
+  "seed": 1185,
+  "fail": 100,
+  "waste": 1393.0,
+  "sec": 4.0,
+  "fev": 24000
+ },
+ {
+  "grp": "robust",
+  "seed": 1222,
+  "fail": 48,
+  "waste": 1133.0,
+  "sec": 4.3,
+  "fev": 24000
+ },
+ {
+  "grp": "efficiency",
+  "seed": 1222,
+  "fail": 100,
+  "waste": 1393.0,
+  "sec": 4.0,
+  "fev": 24000
+ },
+ {
+  "grp": "robust",
+  "seed": 1259,
+  "fail": 48,
+  "waste": 1133.0,
+  "sec": 4.0,
+  "fev": 24000
+ },
+ {
+  "grp": "efficiency",
+  "seed": 1259,
+  "fail": 100,
+  "waste": 1393.0,
+  "sec": 3.9,
+  "fev": 24000
+ },
+ {
+  "grp": "robust",
+  "seed": 1296,
+  "fail": 48,
+  "waste": 1133.0,
+  "sec": 4.2,
+  "fev": 24000
+ },
+ {
+  "grp": "efficiency",
+  "seed": 1296,
+  "fail": 100,
+  "waste": 1393.0,
+  "sec": 4.0,
+  "fev": 24000
+ },
+ {
+  "grp": "robust",
+  "seed": 1333,
+  "fail": 48,
+  "waste": 1133.0,
+  "sec": 4.0,
+  "fev": 24000
+ },
+ {
+  "grp": "efficiency",
+  "seed": 1333,
+  "fail": 100,
+  "waste": 1393.0,
+  "sec": 3.9,
+  "fev": 24000
+ }
+]

@@ -1,0 +1,20 @@
+# Core
+pandas
+numpy
+scikit-learn
+matplotlib
+seaborn
+scipy
+lightgbm
+xgboost
+joblib
+
+# Notebook execution
+ipykernel
+nbconvert
+nbformat
+
+# Optional: only needed to regenerate model checkpoints from scratch via
+# scripts/run_03b_experiments.py / run_loop2.py (LSTM training). Not needed
+# to run notebooks 01-05 as-is, since their checkpoints are committed.
+# torch

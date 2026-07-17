@@ -1,0 +1,403 @@
+% !TEX program = xelatex
+% 프로젝트 통합 최종 보고서 — EDA -> 전처리 -> RUL 예측 -> 정비 스케줄링 -> 롤링 재계획
+\documentclass[11pt]{article}
+
+\usepackage{kotex}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage[a4paper,margin=24mm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{float}
+\usepackage{caption}
+\usepackage[table]{xcolor}
+\usepackage{enumitem}
+\usepackage[colorlinks=true,linkcolor=black,urlcolor=blue,citecolor=black]{hyperref}
+
+\graphicspath{{figures/}{figures/eda_supplement/}{figures/preprocessing/}{figures/rul_model/}{figures/scheduling/}}
+\captionsetup{font=small,labelfont=bf}
+\setlength{\parskip}{0.4em}
+\setlength{\parindent}{0pt}
+\renewcommand{\arraystretch}{1.15}
+\newcommand{\fig}[3]{\begin{figure}[H]\centering\includegraphics[width=#2\linewidth]{#1}\caption{#3}\end{figure}}
+
+\title{\textbf{항공엔진 잔여수명 예측 기반 정비 스케줄링 최적화}\\[4pt]
+\large 프로젝트 통합 최종 보고서 — 데이터 이해가 예측을 만들고, 예측이 결정을 바꾼다}
+\author{NASA C-MAPSS Turbofan Engine Degradation $\cdot$ Predict-then-Optimize 파이프라인}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+본 프로젝트는 NASA C-MAPSS 터보팬 열화 데이터(4개 서브셋, train 709대$\cdot$test 707대)에서
+\textbf{잔여수명(RUL) 예측}과 \textbf{자원 제약 정비 스케줄링}을 잇는 end-to-end 파이프라인을 구축했다.
+설계 철학은 "최신 모델로 이기는 것"이 아니라 \textbf{"EDA가 전처리를 낳고, 전처리가 성능을 만든다"}의 실증이다.
+
+주요 결과 네 가지.
+\textbf{(1) 예측}: EDA$\to$전처리$\to$모델 루프 2회(자기-기준선$\cdot$onset 시계$\cdot$다중 임계)로
+단순 LightGBM$+$LSTM 혼합이 통합 test RMSE \textbf{10.90}(4개 서브셋 10.5--11.0 균형)에 도달 —
+동일 평가 규약의 문헌 최상위 구간이다. 개선분의 약 97\%가 표현(전처리)의 몫, 모델$\cdot$튜닝의 몫은 $\sim$3\%였다.
+\textbf{(2) 스케줄링}: 707대 fleet$\cdot$10창$\cdot$용량 75의 정비 계획을 실제 고장 시점에 재현(replay)해 평가.
+공정 비교 감사 결과 "마감을 깎지 않은 조기 배정(EDF)"이 강건 목적의 실질 최적(고장 48)이었고,
+SA는 이를 검증하는 역할과 "잘못된 목적함수는 좋은 해를 파괴한다(48$\to$100--141)"는 실증을 제공했다.
+\textbf{(3) 불확실성}: 분위수 회귀(P10) 마감이 균일 버퍼를 대체해 고장 \textbf{39}($-19\%$).
+\textbf{(4) 운영 설계}: 롤링 재계획(매 창 재예측)이 예측 오차 비용의 \textbf{$\sim$93\%를 회수}
+(정적 $24.0{\pm}5.1 \to$ 롤링 $1.7{\pm}0.9$, 별도 테스트베드) —
+열화 말기에 신호가 강해진다는 EDA 발견이 "다시 보는 운영"의 가치로 직결된다.
+
+전 과정에 누수 차단(스파이크 주입 테스트$\cdot$엔진 단위 분리$\cdot$train-fit$\to$test-transform),
+다중 시드 재현, 적대적 검증, 공정 비교 감사를 적용했고,
+과장된 초기 주장(``SA가 EDF를 이겼다'')은 감사로 스스로 정정했다.
+\end{abstract}
+\vspace{0.5em}
+\begin{center}\fbox{\parbox{0.93\linewidth}{\small
+\textbf{대응 노트북:} \texttt{notebooks/05\_evaluation.ipynb} (18셀) —
+독립 재계산(fleet $\leftrightarrow$ 원본 정답 대조) $\cdot$ 문헌 비교 $\cdot$ 4중 입증 종합 $\cdot$ 검증 감사 $\cdot$ 최종 결론.\\
+\textbf{본 문서의 성격:} 파이프라인 5단계 전체의 \textbf{종합본}. 각 단계의 상세는 아래 4개 보고서에 있다.
+}}\end{center}
+\vspace{0.5em}
+
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{서론 — 문제와 접근}
+% =====================================================================
+
+\subsection{문제 정의}
+
+항공엔진 fleet의 예지 정비(predictive maintenance)는 두 단계 문제다:
+(i)~다변량 센서 시계열로부터 각 엔진의 \textbf{잔여수명(RUL)}을 추정하고,
+(ii)~추정된 RUL을 마감으로 삼아 \textbf{제한된 정비 용량} 안에서 정비 일정을 최적화한다.
+예측이 틀리면 계획이 무너지고, 계획이 없으면 예측은 숫자에 그친다 —
+본 프로젝트는 이 \emph{predict-then-optimize} 사슬 전체를 구축하고, 각 고리의 기여를 정량 분해했다.
+
+\subsection{설계 철학과 기여}
+
+목표는 transformer류 최신 모델로 순위를 다투는 것이 아니라,
+\textbf{데이터 이해(EDA)가 전처리를 낳고 전처리가 성능을 만든다}는 명제를
+반복 가능한 루프(EDA $\to$ 전처리 $\to$ 모델 $\to$ 잔차 EDA $\to$ \dots)로 실증하는 것이다.
+기여를 요약하면:
+
+\begin{enumerate}[nosep]
+  \item \textbf{EDA 주도 특징 설계}: 모든 특징이 문서화된 EDA 발견에서 유래하며,
+        발견의 증거 강도가 성능 기여를 일관되게 예측했다(강한 증거 $\to$ 큰 이득, 약한 증거 $\to$ 무효).
+  \item \textbf{검증 문화}: 누수 스파이크 테스트, 시드 재현, 물리 해석, 그리고 스스로의 주장을 뒤집은
+        공정 비교 감사까지 — 모든 극적인 개선은 적대적으로 검증된 후에만 채택되었다.
+  \item \textbf{예측$\to$결정의 정량 사슬}: "RMSE 4.1 개선"이 "미정비 고장 37대 감소"로,
+        "불확실성 정량화"가 "9대 추가 구제"로, "재예측 운영"이 "93\% 회수"로 환산되었다.
+\end{enumerate}
+
+\subsection{산출물 지도 — 보고서 $\leftrightarrow$ 노트북 1:1 대응}
+
+파이프라인의 각 단계는 \textbf{보고서 1편 $+$ 실행된 노트북 1개}로 구성된다.
+노트북은 보고서 수치의 \emph{독립 재현 경로}이며, 핵심 검증은 노트북 내 \texttt{assert}로 강제된다.
+
+\begin{table}[H]
+\centering\small
+\caption{문서 $\leftrightarrow$ 노트북 대응 (모든 노트북 실행 완료, 출력 포함)}
+\label{tab:map}
+\begin{tabular}{p{0.05\linewidth}p{0.19\linewidth}p{0.21\linewidth}p{0.43\linewidth}}
+\toprule
+단계 & 보고서 & 노트북 (\texttt{notebooks/}) & 노트북 내 자체 검증 \\
+\midrule
+01 & \texttt{eda\_report} & \texttt{01\_eda.ipynb} (58셀) & 조건 복원 행 단위 일치, 대리 실험 \\
+02 & \texttt{preprocessing\_report} & \texttt{02\_preprocessing.ipynb} (30셀) & V1--V15 단정(죽은 특징 0개 등) \\
+03 & \texttt{rul\_model\_report} & \texttt{03\_rul\_model.ipynb} (35셀) & 누수 스파이크 PASS, 시드 재현, 최종 10.90 \texttt{assert} \\
+04 & \texttt{scheduling\_report} & \texttt{04\_optimization.ipynb} (27셀) & 공정 비교 감사 재계산(SA 변경 0/707) \\
+05 & \textbf{본 보고서} & \texttt{05\_evaluation.ipynb} (18셀) & fleet $\leftrightarrow$ 원본 정답 대조 \texttt{assert} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+무거운 실험(LSTM 학습, 24-trial 튜닝, SA 완전요인 튜닝 120회, 롤링 시뮬레이션)은
+\texttt{scripts/}의 체크포인트형 스크립트로 실행되며, 노트북은 그 체크포인트를 로드해 결과를 재현한다.
+알고리즘은 \texttt{src/pipeline.py}에 있다.
+
+% =====================================================================
+\section{데이터와 문제 구조}
+% =====================================================================
+
+C-MAPSS는 터보팬 열화 시뮬레이션으로, 4개 서브셋이 $2{\times}2$ 요인 구조를 이룬다:
+
+\begin{table}[H]
+\centering
+\caption{C-MAPSS $2{\times}2$ 구조 — 운전 조건 수 $\times$ 고장 모드 수}
+\begin{tabular}{lcccc}
+\toprule
+ & 엔진(tr/te) & 운전 조건 & 고장 모드 & 특징 \\
+\midrule
+FD001 & 100/100 & 1 & 1 (HPC) & 기준 서브셋 \\
+FD002 & 260/259 & 6 & 1 (HPC) & 조건이 신호를 가림 \\
+FD003 & 100/100 & 1 & 2 (HPC$+$Fan) & 궤적 분기 \\
+FD004 & 249/248 & 6 & 2 & 최난이도 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+train은 고장까지의 전체 궤적(run-to-failure), test는 임의 시점 절단 $+$ 정답 잔여수명이다.
+각 행은 3개 운전 설정과 21개 센서로 구성된다.
+평가 규약은 관행을 따랐다: RUL 라벨 상한 125(piecewise), test는 엔진당 마지막 시점 1회 예측, RMSE$\cdot$PHM08 점수.
+
+% =====================================================================
+\section{EDA — 파이프라인 전체를 결정한 발견들}
+% =====================================================================
+
+3인 팀의 EDA를 단일 보고서로 통합하고, 격차는 직접 실행한 보완 분석으로 메웠다.
+이후 모든 설계가 아래 발견들로 소급된다.
+
+\begin{enumerate}[nosep]
+  \item \textbf{운전 조건은 신호를 "가린다" (가역)}: FD002/4에서 센서 분산의 대부분이 조건 전환에서 나온다.
+        6개 조건은 설정값 반올림으로 정확히 복원되며(예: $s19{=}84.93 \Leftrightarrow \mathrm{set3}{=}60$, 행 단위 일치),
+        조건별 정규화로 열화 신호가 복원된다 — 조건은 잡음이 아니라 \emph{좌표계}다.
+  \item \textbf{고장 모드는 궤적을 "가른다" (비가역)}: FD003/4의 말기 궤적은 2-군집으로 분기한다
+        (실루엣 0.336$\to$0.645). $2{\times}2$ 대리 실험으로 원인이 조건이 아닌 모드임을 분리 확인했다.
+  \item \textbf{센서 4분류}: 상수 / 조건 지시자($s1,s5,s18,s19$) / 준상수($s6,s10,s16$) / 열화 감지(합집합 17개).
+        서브셋마다 "일하는 센서"가 다르므로 통합 모델은 합집합 17 $+$ 결측 유지(NaN$=$정보)로 설계.
+  \item \textbf{열화는 말기 가속 곡선}: 말기 산포가 초기 대비 4--8배(전 서브셋).
+        초기 구간은 신호가 약하다 $\to$ piecewise 라벨(cap 125)의 근거이자,
+        후일 \emph{롤링 재계획이 강력한 이유}가 된다.
+  \item \textbf{개체 차이가 크다}: 초기 제조 오프셋이 전체 열화 폭의 18--22\% —
+        "지금 값"이 아니라 "자기 초기 대비 변화"가 신호다(자기-기준선 특징의 근거).
+  \item \textbf{보완 EDA(루프 중 발견)}: $s9$--$s14$ 결합이 열화와 함께 \emph{출현}(상관 0.09$\to$0.63);
+        FD003만 onset이 늦고 산포가 크다(상대시점 $0.45{\pm}0.17$ vs 타 서브셋 $\le$0.19).
+\end{enumerate}
+
+\fig{S1_overview_4subsets}{0.92}{4개 서브셋 개관 — 수명 분포와 대표 센서 궤적.}
+\fig{S3_fault_mode_proxy}{0.8}{$2{\times}2$ 대리 실험 — 말기 분기의 원인은 운전 조건이 아니라 고장 모드다.}
+
+% =====================================================================
+\section{전처리 — EDA에서 특징으로, 그리고 루프}
+% =====================================================================
+
+\subsection{특징 계보 (모든 특징은 발견에서 온다)}
+
+\begin{table}[H]
+\centering\small
+\caption{EDA 발견 $\to$ 전처리 처방의 계보와 기여}
+\begin{tabular}{p{0.3\linewidth}p{0.36\linewidth}p{0.24\linewidth}}
+\toprule
+EDA 발견 & 전처리 처방 & 성능 기여 \\
+\midrule
+조건이 신호를 가림 & 조건별 z-정규화 ($\sigma$-floor, clip $\pm$10) & ablation $+2.5$ \\
+열화는 속도가 신호 & rolling 통계 4종 (ma/sd/slope/ewm) & $+2.6$, 중요도 98.9\% \\
+고장 모드 분기 & dataset\_id 범주 $+$ 통합 학습 & 통합 $-2.05$ \\
+piecewise 구조 & 라벨 cap 125 $+$ \textbf{onset 시계$\cdot$누적손상 입력화} (v2) & $-3.0$ \\
+초기 오프셋 18--22\% & \textbf{자기-기준선} $b_s{=}z{-}$초기평균 (v2) & $-1.9$ \\
+FD003 onset 늦음 & \textbf{다중 임계 onset 시계} $\theta{\in}\{0.2,0.3,0.5\}$ (v3) & $-1.0$ (FD003 $-2.6$) \\
+결합 출현$\cdot$모드 방향 & rolling 상관$\cdot$크기 특징 & 미미(채택) \\
+운전 이력 가설 & \emph{사전 EDA로 기각 — 만들지 않음} & — \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+최종 통합 데이터셋: train $160{,}359$행 $\times$ 142열, test 707엔진.
+LSTM용 시퀀스 텐서(창 30, 좌측 패딩$+$마스크)도 동일 원칙으로 병행 생성했다.
+
+\subsection{검증 체계}
+
+노트북 내 단정 V1--V15(예: 조건 복원 일치, 죽은 특징 $\sigma{<}10^{-8}$ 검사),
+외부 교차 검증 U1--U9, 그리고 \textbf{미래 누수 스파이크 테스트}:
+한 엔진의 미래 구간에만 스파이크를 주입했을 때 과거 행의 모든 특징이 불변임을 기계적으로 확인했다
+(이 인과성은 \S7의 롤링 시뮬레이션을 가능하게 한 자산이 된다).
+발견$\cdot$수정한 함정들 — 반올림 \texttt{-0.0}으로 인한 조건 오계수, 죽은 특징 28개(1차) $\to$ 0개 — 도 기록했다.
+
+\subsection{루프의 종료 규율}
+
+"EDA를 다시 파면 전처리가 또 나온다"를 v2$\cdot$v3 두 회차로 실증한 뒤,
+사전 선언한 기준(회차 valid 개선 $<$0.02)에 따라 이후 확장 시도들이 유의미한 개선을 보이지 않자
+v3를 최종으로 확정하고 루프를 종료했다 — 개선의 근거도, 멈춘 지점도 검증에 있다.
+
+% =====================================================================
+\section{RUL 예측 — 표현이 성능을 만든다}
+% =====================================================================
+
+\subsection{성능 여정}
+
+\begin{table}[H]
+\centering
+\caption{통합 test RMSE(cap125) 여정 — 각 단계의 원천}
+\begin{tabular}{llr}
+\toprule
+단계 & 내용 & test RMSE \\
+\midrule
+v1 기본 & z-정규화 $+$ rolling, LightGBM & 15.02 \\
+v1 튜닝$+$혼합 & 24-trial 튜닝($-0.04$ 표면 평탄) $+$ LSTM 혼합 & 13.96 \\
+\textbf{v2} & 자기-기준선 $+$ onset $+$ 누적손상 & \textbf{11.65} \\
+\textbf{v3 (최종)} & $+$다중 임계 onset 시계, LSTM-D 혼합($\alpha{=}0.65$) & \textbf{10.90} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+FD별 10.48 / 10.98 / 10.76 / 11.03 — 4개 서브셋 균형. PHM08 점수 1610.
+기본 대비 $-27\%$ 중 모델$\cdot$튜닝의 기여는 $\sim$0.1, \textbf{나머지 전부가 EDA 유래 표현의 몫}이다.
+
+\subsection{전처리 기여의 다중 입증}
+
+주장 "표현이 성능을 만든다"를 서로 독립인 네 실험으로 입증했다:
+(i)~특징군 ablation(제거 시 $+2.6$);
+(ii)~하이퍼파라미터 표면 평탄(24 trial에서 $-0.04$ — 특징 레버의 1/25);
+(iii)~\textbf{LSTM 입력 사다리}: 같은 모델$\cdot$같은 학습에서 입력 표현만 바꿔
+원시 $16.30 \to$ 조건 제거 $15.08 \to$ z-특징 $14.31 \to$ v2 채널 $12.70$ (test) —
+이득이 모델 계열과 무관함의 직접 증거;
+(iv)~루프 회차별 개선의 시드 재현(v3: $\Delta{=}-0.75/-0.60/-0.57$)과 누수$\cdot$물리 검증.
+
+\fig{L1_lstm_ablation_final}{0.72}{LSTM 입력 사다리 — 같은 모델, 입력 표현만 교체. 전처리 이득은 모델 불문이다.}
+\fig{M1_pred_vs_true}{0.6}{최종 모델의 test 예측 vs 정답 (corr 0.966).}
+
+\subsection{문헌 대비 위치}
+
+동일 평가 규약(cap 125, 엔진당 1회) 기준으로 최근 딥러닝 문헌의 보고치는 대략 11--13 구간이며,
+본 결과(10.90)는 그 상위에 위치한다. 단 두 가지를 명시한다:
+평가 규약이 다른 논문(비-cap, 행 단위 평가 의심 등)은 비교에서 제외했고,
+데이터의 추정 노이즈 바닥($\sim$10--11)에 이미 닿아 있어 이 구간의 우열은 프로토콜 오차 안이다.
+"이겼다"가 아니라 \textbf{"단순한 방법이 같은 벽에 도달했다"}가 정확한 주장이며,
+그 이유는 \S8(Discussion)에서 논한다.
+
+% =====================================================================
+\section{정비 스케줄링 — 예측을 결정으로}
+% =====================================================================
+
+\subsection{정식화와 평가 규약}
+
+계획 지평 $T{=}10$창(창$=$13 cycle), 창당 용량 $K{=}75$(슬롯 750 vs 707대, 슬랙 1.06),
+마감 $d_i{=}\lceil\widehat{\mathrm{RUL}}_i/13\rceil$, 부품 4종 setup 배칭.
+\textbf{계획은 예측으로, 평가는 실제로}: 스케줄을 실제 고장 창에 재현(replay)해
+미정비 고장 수(주 지표$\cdot$비용 가정 무관)$\cdot$낭비 수명$\cdot$총비용을 센다.
+
+\subsection{네 개의 발견}
+
+\begin{enumerate}[nosep]
+  \item \textbf{목적함수 사양이 전부다}: 예측 마감의 "낭비"를 벌점화한 효율 목적의 SA는
+        좋은 초기해를 능동적으로 파괴해 고장 48$\to$100--141 — 예측 오차를 무시한 정식화의 함정.
+  \item \textbf{공정 비교 감사(자기 정정)}: 초기 주장 "강건 SA(48)가 EDF(78)를 이겼다"는
+        마진이 다른 비교였다. 같은 조건에서 \textbf{EDF@마진0 $=$ 48 $=$ SA}(배정 변경 0/707) —
+        48의 원천은 SA가 아니라 "마감을 깎지 않은 조기 배정"이며,
+        SA의 기여는 그 해의 실질 최적성을 24{,}000회 탐색으로 \emph{검증}한 것이다.
+  \item \textbf{불확실성 정량화가 휴리스틱을 대체}: 분위수 회귀(P10, 같은 특징셋)를 마감으로 쓰면
+        고장 \textbf{39}($-19\%$)$\cdot$비용 개선. P10 위에 버퍼 보상을 더해도 이득이 없다 — 이미 흡수됨.
+  \item \textbf{예측 품질 $\to$ 결정 품질의 정량 사슬}(스케줄러 고정):
+        기본 예측(RMSE 15.0) 85대 $\to$ v3(10.9) \textbf{48대} $\to$ Oracle 4대.
+        Oracle 격차의 분해: 9대 $=$ 불확실성 미활용(P10로 회수), 35대 $=$ 예측 오차의 환원 불가능분.
+\end{enumerate}
+
+방법론 측면에서는 강의 체계를 그대로 적용했다:
+통계적 $T_0$$\cdot$지수 스케줄$\cdot$level length$\cdot$자연 종료의 SA 구성,
+완전요인($p{\times}\alpha$) $\times$ 10시드 튜닝(mean$+$std 히트맵, 추세 판독),
+게이트키퍼$\to$비모수 검정(Mann-Whitney U $p{=}8{\times}10^{-6}$), Repair 제약 처리,
+그리고 별도 구현(강의식 level-SA)과의 수렴 일치 교차 검증.
+
+\fig{O4_pred_quality_to_decision}{0.6}{예측 품질 $\to$ 미정비 고장 (스케줄러 고정): 85 $\to$ 48 $\to$ 4.}
+
+% =====================================================================
+\section{확장 — 롤링 재계획: 운영 설계의 가치}
+% =====================================================================
+
+정적(1회) 계획을 넘어, 매 창마다 새 센서 데이터로 재예측$\cdot$재계획하는 운영을 시뮬레이션했다.
+run-to-failure 전체 궤적을 가진 valid 엔진 178대(분리-train 미학습, 모델 재학습으로 누수 차단)를 테스트베드로,
+특징의 인과성(스파이크 테스트로 검증) 덕분에 절단 시점 예측을 정확히 재현할 수 있었다.
+
+\begin{table}[H]
+\centering
+\caption{정적 vs 롤링 — 미정비 고장 (3개 나이-시드 mean$\pm$std)}
+\begin{tabular}{lrr}
+\toprule
+ & 정적 (1회 계획) & \textbf{롤링 (매 창 재예측)} \\
+\midrule
+P10 마감 & $24.0\pm5.1$ & $\mathbf{1.7\pm0.9}$ \;($-93\%$) \\
+Oracle (참조) & 0 & 0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{왜 극적인가 — EDA와의 마지막 연결}: 열화 말기로 갈수록 신호가 강해진다(발견 4$\cdot$onset).
+정적 계획은 신호가 약한 초기 예측의 오차에 잠기지만, 롤링은 엔진이 위험해질수록 정확해지는
+재예측으로 매 창 수정한다 — \emph{정확도가 필요한 순간과 정확도가 생기는 순간이 일치한다}.
+부수 발견: 재계획이 가능하면 롤링-점예측 $\approx$ 롤링-P10 — 적응이 불확실성 정량화의 역할까지 흡수한다.
+
+\fig{O9_rolling_vs_static}{0.62}{롤링 재계획 — 예측 오차 고장의 $\sim$93\%를 회수한다.}
+
+% =====================================================================
+\section{Discussion}
+% =====================================================================
+
+\subsection{왜 단순한 방법이 문헌 상위에 닿는가}
+
+"정교한 SOTA 논문들과 단순한 GBDT가 비슷하다"는 것은 이상 신호가 아니라 다섯 요인의 합이다:
+\begin{enumerate}[nosep]
+  \item \textbf{노이즈 바닥 수렴}: C-MAPSS는 잡음이 주입된 시뮬레이션으로 환원 불가능 오차 바닥($\sim$10--11)이
+        있고, 문헌 전체가 그 벽에 수렴 중이다(2016년 18.4 $\to$ 최근 11--12). 바닥 근처에서는
+        방법 간 차이가 잡음으로 압축된다. 내부 증거도 일치한다: 튜닝 표면 평탄, 두 모델 계열의 동일 지점 수렴,
+        확장 시도들의 무효.
+  \item \textbf{상속된 지식}: 조건별 정규화$\cdot$piecewise cap 125$\cdot$윈도우 관행 등 우리의 "기본값"이
+        과거 논문 한 편씩의 성과다. 그들의 힘겨운 과정의 상당분이 출발점에 이미 들어 있었다.
+  \item \textbf{덜 파인 축의 공략}: 다수 논문은 전처리를 표준으로 고정하고 아키텍처를 혁신한다.
+        우리는 반대로 아키텍처를 고정하고 전처리 축을 5회 반복해 팠다 —
+        tabular성 데이터에서 "튜닝된 GBDT $+$ 좋은 특징 $\ge$ 딥러닝 $+$ 표준 특징"은 문헌이 확인한 일반 현상이다.
+  \item \textbf{문헌 수치의 낙관 편향}: 이 벤치마크의 test 재사용$\cdot$시드 선택 관행은 잘 알려진 비판 대상이다.
+        정직한 방법론으로 그 근처에 가는 것은 보기보다 그럴듯하다.
+  \item \textbf{도구의 시간 압축}: 우리도 5개 루프$\cdot$ablation 24종$+\cdot$수백 실험을 수행했다 —
+        빨랐을 뿐 건너뛰지 않았다.
+\end{enumerate}
+
+\subsection{한계}
+
+(i)~시뮬레이션 데이터(실기 잡음$\cdot$운영 다양성 부재);
+(ii)~cap125 평가 규약은 FD002/4에서 비-cap 보고 논문 대비 유리 — 비교는 동일 규약으로 한정했다;
+(iii)~test를 루프 라운드마다 1회씩 사용(선택은 valid로 했으나 라운드 수만큼의 낙관 가능성);
+(iv)~P10 커버리지 84\%(명목 90\% 미달 — conformal 보정 여지);
+(v)~스케줄링은 단일 fleet 인스턴스$\cdot$창 단위 granularity$\cdot$재계획 비용 미반영;
+(vi)~롤링 테스트베드는 합성 초기 나이의 valid 엔진이다.
+
+\subsection{방법론적 교훈}
+
+\begin{itemize}[nosep]
+  \item \textbf{EDA 증거 강도가 특징 가치의 필터다}: 강한 증거(오프셋 20\%, FD003 onset)는 큰 이득으로,
+        약한 증거(유사도 상관 0.09)는 무효로 — 예외 없이 — 이어졌다.
+  \item \textbf{극적인 개선일수록 적대적으로 검증하라}: 누수 스파이크$\cdot$시드$\cdot$물리 해석을 통과한 것만 채택했고,
+        그 규율이 스케줄링의 불공정 비교("SA가 이겼다")를 스스로 잡아냈다.
+  \item \textbf{목적함수$\cdot$정보$\cdot$운영이 알고리즘보다 크다}: 스케줄링 성능의 지렛대는
+        탐색 알고리즘이 아니라 목적 사양(48 vs 141), 마감 정보(48$\to$39), 운영 설계($\to$1.7)였다.
+        "알고리즘 교체는 마지막 수단"이라는 강의 명제의 실증이다.
+\end{itemize}
+
+% =====================================================================
+\section{결론}
+% =====================================================================
+
+\begin{center}
+\begin{tabular}{lcccccc}
+\toprule
+ & Random & EDF(마진1) & 조기배정(48) & P10 & 롤링 & Oracle \\
+\midrule
+미정비 고장 & 279 & 78 & 48 & \textbf{39} & $\sim$2$^{*}$ & 4 (0$^{*}$) \\
+\bottomrule
+\multicolumn{7}{r}{\small $^{*}$롤링은 별도 valid 테스트베드(178대) 기준.}
+\end{tabular}
+\end{center}
+
+EDA가 전처리를 낳았고(계보표의 전 항목), 전처리가 예측을 만들었으며(개선의 97\%),
+예측과 그 불확실성$\cdot$갱신이 정비 결정을 바꿨다(85$\to$48$\to$39$\to$$\sim$2).
+프로젝트의 한 줄 결론:
+
+\begin{center}
+\emph{성능은 모델이 아니라 데이터 이해에서 나오고,\\
+실전 가치는 한 번의 좋은 예측이 아니라 신호가 강해질 때마다 다시 보는 운영에서 나온다.}
+\end{center}
+
+\vspace{1em}
+\hrule
+\vspace{0.6em}
+\small
+\textbf{상세 보고서.} \texttt{eda\_report.pdf} $\cdot$ \texttt{preprocessing\_report.pdf} $\cdot$
+\texttt{rul\_model\_report.pdf} $\cdot$ \texttt{scheduling\_report.pdf}.
+\textbf{재현.} \texttt{scripts/}(전처리$\cdot$루프$\cdot$스케줄링$\cdot$감사$\cdot$롤링, 전부 체크포인트형),
+\texttt{src/pipeline.py}, \texttt{notebooks/} 노트북.
+\textbf{참고문헌.} 강의자료 4종(SA$\cdot$튜닝$\cdot$성능평가$\cdot$개선), Saxena \& Goebel C-MAPSS,
+Heimes (2008), Zapfel et al.\ (2010), Halim et al.\ (2021), Dolan \& Mor\'e (2002), Grinsztajn et al.\ (2022).
+
+\end{document}

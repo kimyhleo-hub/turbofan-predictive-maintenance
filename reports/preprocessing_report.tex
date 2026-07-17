@@ -1,0 +1,410 @@
+% !TEX program = xelatex
+% 전처리 보고서 — EDA 최종본에서 도출한 설계의 구현 및 실행 결과
+\documentclass[11pt]{article}
+
+\usepackage{kotex}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage[a4paper,margin=24mm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{float}
+\usepackage{caption}
+\usepackage[table]{xcolor}
+\usepackage{enumitem}
+\usepackage[colorlinks=true,linkcolor=black,urlcolor=blue,citecolor=black]{hyperref}
+
+\graphicspath{{figures/}{figures/preprocessing/}}
+\captionsetup{font=small,labelfont=bf}
+\setlength{\parskip}{0.4em}
+\setlength{\parindent}{0pt}
+\renewcommand{\arraystretch}{1.15}
+\newcommand{\fig}[3]{\begin{figure}[H]\centering\includegraphics[width=#2\linewidth]{#1}\caption{#3}\end{figure}}
+\newcommand{\pass}{\textcolor{green!55!black}{\textbf{PASS}}}
+
+\title{\textbf{전처리 보고서}\\[3pt]
+\large — EDA 최종본에서 도출한 설계·구현·실행 결과}
+\author{항공엔진 잔여수명(RUL) 예측 기반 정비 스케줄링 최적화 프로젝트}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+본 보고서는 EDA 최종본(\texttt{eda\_report.tex})에서 도출한 전처리 설계를 노트북(\texttt{notebooks/02\_preprocessing.ipynb})으로 구현·실행한 결과를 기록한다.
+설계 단계에서 예측한 모든 수치가 실측과 일치했고, 검증 assertion \textbf{V1--V15가 전부 통과}했다.
+가장 중요한 개선은 조건 지시 센서(\texttt{s1}, \texttt{s5}, \texttt{s18}, \texttt{s19}) 제외와 $z$-clip($\pm10$)으로
+\textbf{분산 0인 죽은 특징이 완전히 사라진 것}이다(직전 구현 FD004 28개/16.4\% $\to$ \textbf{0개}).
+Tabular 경로(LightGBM)와 Sequence 경로(LSTM)의 FD별 산출물에 더해, \textbf{통합 모델용 조립}까지 완료하였다:
+합집합 17센서로 정렬한 통합 tabular(160{,}359행, \texttt{engine\_id} 포함)와 통합 시퀀스 텐서($F=27$)를 생성하고,
+NaN 패턴·engine 유일성·zero-fill을 V13--V15로 검증하였다.
+나아가 통합 산출물의 무결성을 \textbf{9종 외부 교차 대조(U1--U9)}로,
+소비 가능성을 \textbf{LightGBM 실학습 smoke test}(valid RMSE 15.28, FD001 14.66 — 기준선 근처, 누수 신호 없음)와
+\textbf{LSTM forward 텐서 계약 검증}으로 확인하였다.
+\end{abstract}
+\vspace{0.5em}
+\begin{center}\fbox{\parbox{0.93\linewidth}{\small
+\textbf{대응 노트북:} \texttt{notebooks/02\_preprocessing.ipynb} (30셀) — 설계·구현·검증(V1--V15)이 실행 출력과 함께 담겨 있다.\\
+\textbf{파이프라인 위치:} 01 EDA $\to$ \textbf{02 전처리} $\to$ 03 예측 $\to$ 04 스케줄링 $\to$ 05 평가\\
+\textbf{선행 문서:} \texttt{eda\_report.pdf} (모든 처방의 근거) \quad
+\textbf{다음 문서:} \texttt{rul\_model\_report.pdf} (표현이 성능이 되는 곳)
+}}\end{center}
+\vspace{0.5em}
+
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{개요 — 무엇을 실행했나}
+% =====================================================================
+
+9단계 파이프라인(S1--S9)과 두 출력 경로를 설계대로 구현하였다.
+\textbf{S1--S5(로드·RUL 라벨·\texttt{condition\_id}·센서 4분류·조건 정규화)를 공유}하고 특징 구성에서 분기한다.
+
+\begin{itemize}[nosep]
+  \item \textbf{Tabular} (LightGBM 주 모델) — raw $+$ 조건 정규화 \texttt{z\_} $+$ rolling(mean/std/delta/slope)
+  \item \textbf{Sequence} (LSTM 병행) — 윈도우 텐서 $(N, L, F)$ $+$ 마스크
+\end{itemize}
+
+모든 결과는 \texttt{data/raw/}의 원본에서 직접 계산하였으며, 실행 로그의 수치를 그대로 수록한다.
+
+% =====================================================================
+\section{센서 4분류 결과}
+% =====================================================================
+
+FD별 train 기준 분류 결과는 설계 예측과 \textbf{정확히 일치}하였다(표~\ref{tab:cls}).
+
+\begin{table}[H]
+\centering
+\caption{센서 4분류 실행 결과 (설계 예측과 일치)}
+\label{tab:cls}
+\begin{tabular}{lp{3.9cm}p{2.6cm}cc}
+\toprule
+set & 상수(제거) & 조건지시자(제거) & 근사상수 & 열화가능 $n$ \\
+\midrule
+FD001 & s1, s5, s10, s16, s18, s19 & (없음) & s6 & 15 \\
+FD002 & (없음) & s1, s5, s18, s19 & s16 & 17 \\
+FD003 & s1, s5, s16, s18, s19 & (없음) & s10 & 16 \\
+FD004 & (없음) & s1, s5, s18, s19 & s16 & 17 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\fig{P1_sensor_classification}{0.62}{FD별 센서 4분류. 조건이 6개인 FD002/FD004는 상수가 사라지는 대신 조건 지시자가 나타난다.}
+
+% =====================================================================
+\section{Tabular 경로 — 특징 생성 결과}
+% =====================================================================
+
+센서 파생 특징 수는 $8n$($=$ raw $n$ $+$ \texttt{z\_} $n$ $+$ rolling $6n$)이며, 설계 예측과 일치한다(표~\ref{tab:feat}).
+CSV 컬럼 수 $=$ 메타 4(\texttt{unit}, \texttt{cycle}, \texttt{dataset\_id}, \texttt{condition\_id}) $+$ 특징 $+$ \texttt{RUL}.
+
+\begin{table}[H]
+\centering
+\caption{Tabular 산출물 (실행 결과)}
+\label{tab:feat}
+\begin{tabular}{lrrrr}
+\toprule
+set & $n$ & 센서 파생 $8n$ & train 행$\times$열 & test 행$\times$열 \\
+\midrule
+FD001 & 15 & 120 & $20{,}631 \times 125$ & $13{,}096 \times 124$ \\
+FD002 & 17 & 136 & $53{,}759 \times 141$ & $33{,}991 \times 140$ \\
+FD003 & 16 & 128 & $24{,}720 \times 133$ & $16{,}596 \times 132$ \\
+FD004 & 17 & 136 & $61{,}249 \times 141$ & $41{,}214 \times 140$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\fig{P3_rul_label}{0.6}{piecewise-linear RUL 라벨(FD001 unit 1). 초반은 125로 평탄, 이후 선형 감소.}
+
+% =====================================================================
+\section{핵심 결과 — 죽은 특징 0개}
+% =====================================================================
+
+설계 단계에서 지목한 두 결함이 실측으로 해소되었다.
+
+\begin{table}[H]
+\centering
+\caption{조건 정규화 품질 (실측). 죽은 특징 $=$ 분산 $<10^{-8}$인 컬럼.}
+\label{tab:dead}
+\begin{tabular}{lrrl}
+\toprule
+set & 죽은 특징 & $\max|z|$ & 조건 지시자 \texttt{z\_} 컬럼 \\
+\midrule
+FD001 & 0 & 8.12 & 없음 \\
+FD004 & 0 & 10.00 & 없음 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{itemize}[nosep]
+  \item \textbf{조건 지시자 제외} — \texttt{s1}, \texttt{s5}, \texttt{s18}, \texttt{s19}에 \texttt{z\_}를 만들지 않으므로, 직전 구현에서 FD004 특징의 \textbf{16.4\%(28개)}였던 분산 0 컬럼이 \textbf{0개}가 되었다.
+  \item \textbf{$z$-clip $\pm10$} — FD004의 $\max|z|=10.00$은 근사상수 \texttt{s16}이 $10$에서 clip된 것이고, FD001은 $\max|z|=8.12$로 clip에 닿지 않았다. 즉 \textbf{병리 센서만 억제하고 정상 신호는 보존}한다 --- clip 한계 $\pm10$은 설계 시 정상 센서 최대치($\max|z|\approx8.3$)를 실측해 정한 값이다.
+\end{itemize}
+
+\fig{P2_condition_norm_clip}{0.98}{(좌) \texttt{z\_s11} — 조건 제거 후 RUL과 정렬. (우) $z$-clip $\pm10$: 병리 센서 \texttt{s16}(clip 전 $|z|\to48$)만 억제되고 정상 센서 \texttt{s9}(max$\approx8.3$)는 온전히 보존된다.}
+
+% =====================================================================
+\section{Sequence 경로 — LSTM 텐서 생성 결과}
+% =====================================================================
+
+윈도우 $L=30$, 좌측 패딩 $+$ 마스킹으로 시퀀스 텐서를 생성하였다(표~\ref{tab:seq}).
+특징 차원 $F$는 단일조건 서브셋에서 \texttt{z\_}센서 $n$개, 다중조건에서 $n+6$(condition one-hot)이다.
+
+\begin{table}[H]
+\centering
+\caption{Sequence 산출물 (실행 결과). test는 엔진별 마지막 윈도우 1개.}
+\label{tab:seq}
+\begin{tabular}{lccccc}
+\toprule
+set & $L$ & $F$ & 조건 & \texttt{X\_train} & \texttt{X\_test} \\
+\midrule
+FD001 & 30 & 15 & 단일 & $(20{,}631,\ 30,\ 15)$ & $(100,\ 30,\ 15)$ \\
+FD002 & 30 & 23 & 다중 & $(53{,}759,\ 30,\ 23)$ & $(259,\ 30,\ 23)$ \\
+FD003 & 30 & 16 & 단일 & $(24{,}720,\ 30,\ 16)$ & $(100,\ 30,\ 16)$ \\
+FD004 & 30 & 23 & 다중 & $(61{,}249,\ 30,\ 23)$ & $(248,\ 30,\ 23)$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+test 엔진 중 $L=30$보다 짧은 것(FD002 6개, FD004 11개)은 좌측 패딩되며, 그 구간 mask $=0$으로 LSTM이 무시한다.
+
+\fig{P4_lstm_padding}{0.95}{FD004 최단 test 엔진의 마스크(좌)와 \texttt{z\_s11} 시퀀스(우). 짧은 궤적은 앞쪽이 패딩되고 mask로 가려진다.}
+
+% =====================================================================
+\section{통합 데이터셋 조립 — Unified}
+% =====================================================================
+
+설계한 통합 구성을 실행하였다.
+FD별 산출물을 \textbf{합집합 17센서}(교집합 15 $+$ \texttt{s10}, \texttt{s16}) 컬럼으로 정렬해 하나로 합치고, 통합 시퀀스 텐서를 생성하였다.
+조건 정규화 $z$ 통계는 \textbf{FD별로 유지}하였다 — 고장모드가 달라 같은 조건이라도 기준선이 다를 수 있고, 데이터셋 정체성은 \texttt{dataset\_id}가 담당한다(pooled 통계는 A6 ablation에서 비교).
+
+\subsection{Unified Tabular}
+
+\begin{table}[H]
+\centering
+\caption{통합 tabular 산출물 (실행 결과)}
+\label{tab:uni}
+\begin{tabular}{lll}
+\toprule
+항목 & train & test \\
+\midrule
+행 수 & 160{,}359 ($=$ 4개 서브셋 합) & 104{,}897 \\
+열 수 & 142 (메타 5 $+$ 특징 136 $+$ \texttt{RUL}) & 141 \\
+엔진 수 (\texttt{engine\_id}) & 709 & 707 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{\texttt{engine\_id} — 통합 분리의 필수 조건.}
+raw \texttt{unit}은 FD 간 충돌한다 — \texttt{unit} 1--100은 네 서브셋 모두에 존재하므로, \texttt{unit}으로 group split하면 서로 다른 엔진이 한 그룹으로 묶인다.
+\texttt{engine\_id}$\,=\,$\texttt{dataset\_id}\_\texttt{unit}으로 이를 해결하고, FD별 층화 분리(각 FD에서 75/25)로 모든 FD가 valid에 포함됨을 확인하였다(겹침 0).
+
+\paragraph{NaN 패턴 — "없음"은 정보다.}
+해당 FD에 존재하지 않는 센서의 특징은 NaN으로 유지한다(대치 금지).
+FD 안에서 부분 NaN은 없다 — 컬럼은 전부 있거나 전부 없다(표~\ref{tab:nan}).
+LightGBM은 결측을 분기에서 native하게 처리하며, 평균 대치는 "그 FD에 없음"이라는 정보를 지운다.
+
+\begin{table}[H]
+\centering
+\caption{FD별 전체-NaN 특징 수 (실측 $=$ 계획 예측)}
+\label{tab:nan}
+\begin{tabular}{lcccc}
+\toprule
+ & FD001 & FD002 & FD003 & FD004 \\
+\midrule
+없는 센서 & s10, s16 & — & s16 & — \\
+NaN 특징 수 ($\times8$) & 16 & 0 & 8 & 0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Unified Sequence}
+
+\begin{table}[H]
+\centering
+\caption{통합 시퀀스 텐서 (실행 결과)}
+\label{tab:useq}
+\begin{tabular}{lll}
+\toprule
+항목 & 값 & 비고 \\
+\midrule
+\texttt{X\_train} & $(160{,}359,\ 30,\ 27)$ & 윈도우 $L=30$ \\
+\texttt{X\_test}  & $(707,\ 30,\ 27)$ & 엔진별 마지막 윈도우 \\
+채널 $F=27$ & $z$합집합 17 $+$ cond one-hot 6 $+$ ds one-hot 4 & 전 FD 동일 의미 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+NN은 NaN을 다루지 못하므로 없는 센서 채널은 \textbf{0으로 채운다} — $z$ 공간에서 0은 "조건 평균"이라 중립이며, dataset one-hot이 "이 FD엔 그 센서가 없다"를 구분하게 한다.
+V15에서 FD001 행의 \texttt{s10}·\texttt{s16} 채널과 FD003 행의 \texttt{s16} 채널이 정확히 0임을 확인하였다.
+
+\fig{P5_unified_overview}{0.95}{통합 train 구성(좌 — FD별 행 수, 총 160{,}359행/709엔진)과 FD별 NaN 특징 수(우 — 해당 FD에 없는 센서, 정보로 유지).}
+
+\subsection{무결성 교차 검증 (U1--U9)}
+
+노트북 내부 assertion(V13--V15)과 별개로, 저장된 산출물을 \textbf{외부 스크립트로 원천과 교차 대조}하였다.
+통합 tabular·통합 시퀀스·FD별 CSV·raw RUL 파일이 행 단위로 서로 정합함을 확인한다(표~\ref{tab:ucheck}).
+
+\begin{table}[H]
+\centering
+\caption{통합 산출물 무결성 교차 검증 (외부 재검, 전부 통과)}
+\label{tab:ucheck}
+\begin{tabular}{clc}
+\toprule
+\# & 검증 내용 & 결과 \\
+\midrule
+U1 & 시퀀스 \texttt{y} $=$ tabular \texttt{RUL} (전행, 순서 포함) & \pass \\
+U2 & 시퀀스 마지막 시점 $=$ tabular \texttt{z\_} 값 (4개 FD 표본 센서) & \pass \\
+U3 & zero-fill 위치 (FD001: s10·s16 / FD003: s16 채널 $=0$) & \pass \\
+U4 & \texttt{mask} 합 $=\min(\text{엔진 내 순번},\,30)$ (전행) & \pass \\
+U5 & condition one-hot $=$ \texttt{condition\_id} (전행) & \pass \\
+U6 & dataset one-hot 블록 정합 (FD 순서·합 $=1$) & \pass \\
+U7 & test \texttt{true\_RUL} $=$ \texttt{RUL\_FDxxx.txt} 순서 concat (100/259/100/248) & \pass \\
+U8 & 통합 \texttt{z\_} $=$ FD별 CSV \texttt{z\_} (정렬이 값을 훼손하지 않음) & \pass \\
+U9 & 시퀀스 텐서 finite (NaN/inf 없음) & \pass \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{소비 가능성 smoke test — LightGBM 실학습 · LSTM 텐서 계약}
+
+"두 모델이 이 데이터를 실제로 소비할 수 있는가"를 형태 검증이 아니라 \textbf{실행으로} 확인하였다.
+
+\paragraph{LightGBM (실제 학습).}
+통합 CSV를 그대로 로드해 \texttt{dataset\_id}·\texttt{condition\_id}를 native categorical로, NaN을 대치 없이 넣고,
+\texttt{engine\_id} 기준 FD별 층화 분리(75/25)로 120 tree를 학습하였다(소요 9초).
+
+\begin{quote}\ttfamily
+valid RMSE $=$ 15.28\quad (FD001 14.66 / FD002 16.96 / FD003 11.25 / FD004 15.40)
+\end{quote}
+
+이는 튜닝 없는 \emph{smoke test}이지 벤치마크가 아니다.
+다만 두 가지 신호가 중요하다:
+(i)~NaN·categorical·엔진 분리를 포함한 \textbf{전체 파이프라인이 오류 없이 학습}되고,
+(ii)~FD001 RMSE가 표준 기준선(12--14) \emph{근처이되 의심스럽게 낮지 않다} — 누수가 있었다면 한 자릿수로 떨어졌을 것이다.
+정식 학습·튜닝·ablation은 \texttt{03}에서 수행한다.
+
+\paragraph{LSTM (텐서 계약).}
+mask 게이팅을 포함한 LSTM cell forward(numpy 구현)로 통합 텐서 배치 $(512, 30, 27)$을 소비시켜
+유한한 출력 $(512,1)$이 나옴을 확인하였다 — shape·dtype(float32)·mask 의미·입력 스케일($z$±10, one-hot 0/1)이 순환 모델 계약에 부합한다.
+\textbf{torch는 아직 미설치}이므로 실제 LSTM 학습은 \texttt{03}에서 \texttt{pip install torch} 후 진행한다(데이터 쪽 준비는 완료).
+
+% =====================================================================
+\section{검증 결과 — V1--V15 전부 통과}
+% =====================================================================
+
+전처리 실행 중 모든 assertion이 통과하였다(표~\ref{tab:v}). 하나라도 실패하면 파이프라인이 중단되도록 구현하였다.
+
+\begin{table}[H]
+\centering
+\caption{검증 assertion 실행 결과}
+\label{tab:v}
+\begin{tabular}{clc}
+\toprule
+\# & 검증 & 결과 \\
+\midrule
+V1 & 조건 수 (FD001/003$=$1, FD002/004$=$6) & \pass \\
+V2 & 퇴화 특징 없음 ($\sigma>10^{-8}$) & \pass \\
+V3 & $z$-clip ($\max|z|\le10$) & \pass \\
+V4 & 특징 NaN 없음 & \pass \\
+V5 & 누수 컬럼(total\_life 등) 부재 & \pass \\
+V6 & 엔진 단위 분리 (겹침 0) & \pass \\
+V8 & rolling 미래 미사용 (스파이크 단위 테스트) & \pass \\
+V9 & RUL 범위 $[0,125]$ & \pass \\
+V10 & 조건 지시자 \texttt{z\_} 부재 & \pass \\
+V11 & 시퀀스 텐서 정렬 & \pass \\
+V12 & mask 정합 (0/1, 마지막 시점 $=1$) & \pass \\
+V13 & (통합) 컬럼·행수·NaN 패턴 $\{16,0,8,0\}$, 부분 NaN 없음 & \pass \\
+V14 & (통합) \texttt{engine\_id} 유일(709/707)·층화 분리 겹침 0 & \pass \\
+V15 & (통합 시퀀스) shape·zero-fill 위치·mask & \pass \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+V8은 인위적 시퀀스의 마지막 시점에 스파이크를 주입해, 그 이전 rolling 값이 변하지 않음을 확인하는 방식으로 검사하였다 — 누수는 성능 지표만으로는 드러나지 않기 때문이다.
+
+% =====================================================================
+\section{산출물}
+% =====================================================================
+
+\begin{table}[H]
+\centering
+\caption{생성된 산출물}
+\label{tab:out}
+\begin{tabular}{lll}
+\toprule
+경로 & 파일 & 내용 \\
+\midrule
+Tabular (FD별) & \texttt{data/processed/\{train,test\}\_features\_\{FD\}.csv} & 메타 $+$ 특징 $+$ \texttt{RUL} \\
+Tabular (통합) & \texttt{data/processed/\{train,test\}\_features\_unified.csv} & 합집합 정렬 $+$ \texttt{engine\_id} \\
+Sequence (FD별) & \texttt{data/processed/seq/\{FD\}\_\{train,test\}.npz} & \texttt{X}, \texttt{y}, \texttt{mask}, \texttt{unit} \\
+Sequence (통합) & \texttt{data/processed/seq/unified\_\{train,test\}.npz} & $F=27$, \texttt{engine}/\texttt{dataset} 포함 \\
+Manifest & \texttt{feature\_manifest.json}, \texttt{seq/seq\_manifest.json} & unified 항목 포함 \\
+그림 & \texttt{reports/figures/preprocessing/P1--P5.png} & 본 보고서 그림 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\texttt{feature\_manifest.json}은 FD별 센서 분류와 특징 목록을 담으므로, \texttt{03\_rul\_model}이 컬럼명을 하드코딩하지 않고 참조할 수 있다.
+(\texttt{data/processed/}는 용량이 크고 재생성 가능하므로 Git에 올리지 않는다.)
+
+% =====================================================================
+\section{전처리 v2 — 루프 1회차: 보완 EDA의 입력화}
+% =====================================================================
+
+모델링 라운드 이후, EDA 최종본의 \textbf{보완 EDA 절}(확인·기각·역방향 발견)에서 도출한 특징 4군을 추가했다.
+모든 특징은 기존 unified 산출물의 \texttt{z\_} 위에서 \textbf{과거 전용}으로 파생된다(\texttt{scripts/run\_v2\_features.py}).
+
+\begin{table}[H]
+\centering
+\caption{v2 특징 4군 (28개) — 각각의 EDA 계보}
+\label{tab:v2feat}
+\begin{tabular}{p{3.4cm}p{5.2cm}p{5.2cm}}
+\toprule
+특징군 & 정의 & EDA 근거 \\
+\midrule
+G1 자기-기준선 (17) & $b_s = z_s - \overline{z_s[\text{첫}\le10\text{cyc}]}$ (expanding, 과거 전용) & 보완 EDA: 초기 제조 오프셋 $=$ 열화량의 18--22\% \\
+G2 건강지표 (4) & $H=\mathrm{mean}_s|b_s|$, $H$-ma20, 누적손상 $\sum\mathrm{relu}(H{-}0.3)$, onset 경과 & piecewise 구조의 입력화, 단조 드리프트의 총량화 \\
+G3 결합 출현 (1) & rolling corr$_{20}$(\texttt{z\_s9}, \texttt{z\_s14}) & 보완 EDA: 결합이 말기에 \emph{출현} (0.09$\to$0.63) \\
+G4 모드 크기 (5) & $|b_s|$, $s\in\{$s7,s12,s15,s20,s21$\}$ & \S7.2 고장모드별 방향 반전 $\to$ 부호 불변화 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{누수 검증 (V-v2).}
+마지막 cycle의 센서를 $+100$으로 오염시켜도 그 이전 모든 시점의 v2 특징 28개가 \textbf{전부 불변}임을 확인했다(스파이크 단위 테스트, 전 특징 PASS).
+자기-기준선은 첫 10 cycle 구간에서 expanding mean을 쓰므로 초기 구간도 미래를 참조하지 않는다.
+
+\paragraph{성능 효과.}
+v2 특징의 모델 성능 기여(valid $15.19 \to 10.29$, test $11.65$)와 적대적 검증(시드 재현성·물리 해석)은 \texttt{rul\_model\_report.tex}의 "루프 1회차" 절에 기록되어 있다.
+
+\paragraph{v3 (루프 2회차).}
+FD003 격차 mini-EDA(onset 상대시점 $0.45\pm0.17$로 유일하게 늦고 산포 큼)에서
+\textbf{다중 임계 onset 시계}($\theta{=}0.2/0.5$) $+$ 도달 플래그 $+$ 경계 마진 4특징을 추가했다(\texttt{scripts/run\_loop2.py}).
+효과: valid $10.29\to9.29$, FD003 $9.26\to6.64$ — 상세는 모델 보고서 루프 2회차 절.
+fleet 예측 CSV는 2회차 혼합(v3-LGBM$\times$LSTM-D) 모델로 갱신되었다.
+
+% =====================================================================
+\section{다음 단계}
+% =====================================================================
+
+\begin{enumerate}[nosep]
+  \item \texttt{03\_rul\_model} — FD별 모델과 통합 모델(unified CSV, \texttt{engine\_id} 기준 분리)을 모두 학습. overall $+$ FD별 RMSE, PHM08 병기.
+  \item Ablation A0--A10 수행 — 조건 지시자 제외, 근사상수 유지, 조건 정규화, rolling, clip 한계, 통합 구성, LSTM 등 전처리 가정 검증.
+  \item 기준선 확인 — FD001 RMSE 약 12--14. 크게 낮으면 누수부터 재점검(V5--V8).
+        smoke test에서 이미 FD001 14.66으로 기준선 근처임을 확인(정식 튜닝으로 개선 여지).
+  \item LSTM 경로 — \texttt{pip install torch} 후 \texttt{seq/unified\_\{train,test\}.npz}로 학습 (데이터 계약은 검증 완료).
+\end{enumerate}
+
+\vspace{1em}
+\hrule
+\vspace{0.6em}
+\small
+\textbf{재현.} \texttt{notebooks/02\_preprocessing.ipynb} 실행 시 본 보고서의 CSV·텐서·그림이 생성된다.
+\quad\textbf{근거.} \texttt{eda\_report.tex}(EDA 최종본 — 모든 설계 결정의 출처).
+
+\end{document}
